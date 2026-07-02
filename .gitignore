@@ -1,0 +1,6 @@
+# Built plugin binaries
+/protoc-gen-*
+/cmd/*/protoc-gen-*
+# Go test / coverage output
+*.out
+*.test
