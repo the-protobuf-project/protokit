@@ -1,0 +1,47 @@
+name: Release
+
+# Auto-creates a GitHub Release whenever a semver tag (v1.2.3) is pushed.
+# This is a pure Go library, so there are no binaries to build or upload —
+# the "release" is a Git tag plus human-readable notes generated from the
+# commits/PRs merged since the previous tag.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write # required to create the GitHub Release
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # Gate the release on a green build/test so we never publish a broken tag.
+  verify:
+    name: Verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go build ./...
+      - run: go test ./...
+
+  release:
+    name: Publish release
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history so release notes can diff against the previous tag
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          # Auto-generate the changelog from commits/PRs since the last tag,
+          # categorized per .github/release.yml.
+          generate_release_notes: true
+          # Mark pre-1.0 / -rc / -beta tags as pre-releases automatically.
+          prerelease: ${{ contains(github.ref_name, '-') }}

@@ -1,0 +1,23 @@
+# Controls how GitHub's auto-generated release notes are grouped.
+# Used by `generate_release_notes: true` in .github/workflows/release.yml.
+# Categories match by PR label; the `feat`/`fix`/etc. labels below can be
+# applied to PRs, and anything unmatched falls into "Other changes".
+changelog:
+  exclude:
+    labels:
+      - ignore-for-release
+    authors:
+      - dependabot
+  categories:
+    - title: ✨ Features
+      labels: ["feature", "feat", "enhancement"]
+    - title: 🐛 Bug Fixes
+      labels: ["fix", "bug"]
+    - title: 📝 Documentation
+      labels: ["docs", "documentation"]
+    - title: 🔧 Maintenance
+      labels: ["chore", "refactor", "ci", "test"]
+    - title: 📦 Dependencies
+      labels: ["dependencies"]
+    - title: 🔀 Other changes
+      labels: ["*"]
