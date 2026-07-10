@@ -9,15 +9,15 @@ changelog:
     authors:
       - dependabot
   categories:
-    - title: ✨ Features
+    - title: Features
       labels: ["feature", "feat", "enhancement"]
-    - title: 🐛 Bug Fixes
+    - title: Bug Fixes
       labels: ["fix", "bug"]
-    - title: 📝 Documentation
+    - title: Documentation
       labels: ["docs", "documentation"]
-    - title: 🔧 Maintenance
+    - title: Maintenance
       labels: ["chore", "refactor", "ci", "test"]
-    - title: 📦 Dependencies
+    - title: Dependencies
       labels: ["dependencies"]
-    - title: 🔀 Other changes
+    - title: Other changes
       labels: ["*"]
