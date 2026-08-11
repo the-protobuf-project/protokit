@@ -1,0 +1,67 @@
+# Dependabot configuration.
+#
+# This file enables Dependabot *version updates* (automated dependency-bump pull
+# requests). Dependabot *security alerts* are enabled separately in the repository
+# settings under Security > Code security and analysis; keep both on.
+#
+# Docs: https://docs.github.com/code-security/dependabot/dependabot-version-updates
+version: 2
+updates:
+  # Go module dependencies (go.mod + go.sum).
+  #
+  # protokit's dependency set is small and load-bearing: the protobuf runtime and
+  # protocompile are what the IR builder and the in-process golden harness are
+  # written against, so a bump here is a real change to generated output, not
+  # housekeeping. The full test suite plus the consumers' golden trees are what
+  # decide whether one is safe.
+  - package-ecosystem: "gomod"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "go"
+    commit-message:
+      prefix: "deps"
+    groups:
+      # Everything except the protobuf runtime bundles into one PR — these are
+      # leaf dependencies whose bumps are independently boring.
+      go-dependencies:
+        patterns:
+          - "*"
+        exclude-patterns:
+          - "google.golang.org/protobuf"
+    ignore:
+      # google.golang.org/protobuf is deliberately *not* auto-bumped.
+      #
+      # Its version is pinned in two places that must move together: this go.mod,
+      # and the `buf.build/protocolbuffers/go:vX.Y.Z` code generator in
+      # buf.gen.yaml that produces the committed stubs under
+      # protobuf/protokitpbv1/. Bumping only one of them regenerates stubs against
+      # a runtime they were not built for — and CI's staleness gate would report
+      # it as an unrelated diff. Bump both by hand, in one commit, then run
+      # `buf generate`.
+      - dependency-name: "google.golang.org/protobuf"
+
+  # The GitHub Actions used by this repo's own workflows (ci, publish).
+  #
+  # Worth having beyond the usual reasons: the api-lint job pins
+  # setup-google-api-linter to an exact release because no moving major tag is
+  # published for it, so nothing else would ever notice a new one.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "github-actions"
+    commit-message:
+      prefix: "ci"
+    groups:
+      actions:
+        patterns:
+          - "*"
