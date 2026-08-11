@@ -16,6 +16,7 @@ package golden
 import (
 	"fmt"
 	"sort"
+	"strings"
 	"testing"
 
 	"google.golang.org/protobuf/compiler/protogen"
@@ -56,20 +57,22 @@ func IRAgreement(t *testing.T, dir string, a, b protokit.Plugin) {
 		return
 	}
 
-	msg := fmt.Sprintf("the two plugins derive %d different neutral name(s) from the same protos "+
+	var msg strings.Builder
+	fmt.Fprintf(&msg, "the two plugins derive %d different neutral name(s) from the same protos "+
 		"— a facet reader must not change what anything is called:", len(divergences))
 	if a.Layout != b.Layout {
-		msg += "\n  note: the plugins were given different LayoutResolvers; layout decides naming " +
-			"policy, so pass the same one to both unless that difference is what you are testing."
+		msg.WriteString("\n  note: the plugins were given different LayoutResolvers; layout decides " +
+			"naming policy, so pass the same one to both unless that difference is what you are testing.")
 	}
 	for i, d := range divergences {
 		if i == maxReportedDivergences {
-			msg += fmt.Sprintf("\n  … and %d more", len(divergences)-i)
+			fmt.Fprintf(&msg, "\n  … and %d more", len(divergences)-i)
 			break
 		}
-		msg += "\n  " + d
+		msg.WriteString("\n  ")
+		msg.WriteString(d)
 	}
-	t.Error(msg)
+	t.Error(msg.String())
 }
 
 // buildIR runs one plugin's build against the shared request. label names the

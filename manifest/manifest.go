@@ -239,7 +239,7 @@ func validConstraint(c string) error {
 	if c == "*" {
 		return nil
 	}
-	for _, part := range strings.Fields(c) {
+	for part := range strings.FieldsSeq(c) {
 		if !comparatorPattern.MatchString(part) {
 			return fmt.Errorf("%q is not a version comparator (want e.g. \">=1.2.0\", \"^1.2\", \"1.26\", or \"*\")", part)
 		}
