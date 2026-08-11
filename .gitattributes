@@ -3,4 +3,3 @@
 
 # In case you also have .proto, make sure they’re counted
 *.proto linguist-detectable=true
-*.prisma linguist-language=Prisma Schema
