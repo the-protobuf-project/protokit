@@ -1,0 +1,6 @@
+# Map custom extension to Protocol Buffer
+*.protobuf linguist-language=Protocol Buffer
+
+# In case you also have .proto, make sure they’re counted
+*.proto linguist-detectable=true
+*.prisma linguist-language=Prisma Schema
