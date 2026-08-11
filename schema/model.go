@@ -60,6 +60,17 @@ type Table struct {
 	// map to no message.
 	Source protoreflect.MessageDescriptor
 
+	// Node is the table's facet key: the fully-qualified name of the message it
+	// was built from ("bookstore.v1.Author"). Use it with protokit.Facet to read
+	// a generator's own message-level options off the IR.
+	//
+	// It is derived from the descriptor, never from Name — an explicit table-name
+	// override, the de-stuttering pass, or a global-namespace qualification all
+	// change Name, and a facet lookup must survive every one of them. Empty for
+	// synthesized tables, which carry no annotation. Unlike Source, it
+	// serializes.
+	Node NodeID
+
 	// Access is the on-chain access-control model ("", "ownable",
 	// "per_record_owner"), set by the web3 enrichment pass from web3.v1.table.access.
 	// Consumed by the chain targets (solidity); the relational targets ignore it.
@@ -156,6 +167,16 @@ type Column struct {
 	// options exist. Nil for synthesized columns (surrogate id, audit timestamps)
 	// that map to no field.
 	Source protoreflect.FieldDescriptor
+
+	// Node is the column's facet key: the fully-qualified name of the field it was
+	// built from ("bookstore.v1.Author.display_name"). Use it with protokit.Facet
+	// to read a generator's own field-level options off the IR.
+	//
+	// Derived from the descriptor, never from Name, so a column-name override
+	// cannot orphan the lookup. Empty for synthesized columns — the surrogate id,
+	// audit timestamps, embed foreign keys, and oneof discriminators — which map
+	// to no field and carry no annotation. Unlike Source, it serializes.
+	Node NodeID
 }
 
 // HasManyRef records a back-reference from a parent table to a child table that

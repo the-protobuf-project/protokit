@@ -21,7 +21,7 @@ import (
 // buildColumn maps one proto field to a *schema.Column.
 // Returns nil when the backend's column option marks the field skipped.
 func (ctx *buildCtx) buildColumn(s *schema.Schema, f *protogen.Field) *schema.Column {
-	cs := ctx.backend.ReadColumn(f.Desc)
+	cs := ctx.columnOf(f.Desc)
 	if cs.Skip {
 		return nil
 	}
@@ -31,6 +31,7 @@ func (ctx *buildCtx) buildColumn(s *schema.Schema, f *protogen.Field) *schema.Co
 		Type:    types.ClassifyField(f),
 		List:    f.Desc.IsList(),
 		Source:  f.Desc, // provenance handle for a generator's enrichment pass
+		Node:    schema.NodeIDOfField(f.Desc),
 	}
 	// col.Type (set above) is the neutral type each generator projects to its own
 	// type system; protokit sets no backend SQLType. An enum field instead carries

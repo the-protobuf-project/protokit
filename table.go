@@ -22,6 +22,7 @@ func (ctx *buildCtx) buildTable(db *schema.Database, s *schema.Schema, msg *prot
 		SourceFile:   src,
 		SourceProto:  srcPath,
 		Source:       msg.Desc, // provenance handle for a generator's enrichment pass
+		Node:         schema.NodeIDOfMessage(msg.Desc),
 	}
 
 	ctx.populateColumns(db, s, t, msg)
@@ -30,10 +31,33 @@ func (ctx *buildCtx) buildTable(db *schema.Database, s *schema.Schema, msg *prot
 		materializeParents(t, res)
 	}
 
-	ts := ctx.backend.ReadTable(msg.Desc)
+	ts := ctx.tableOf(msg.Desc)
 	applyIDStrategy(t, idStrategyOf(ts.ID, types.Provider(db.Provider)))
 	applyTimestamps(t, ts.Timestamps)
+	appendDeclaredIndexes(t, ts.Indexes)
 	return t
+}
+
+// appendDeclaredIndexes appends the message's declared indexes to t. Runs last in
+// table assembly, so a declared index lands after any protokit synthesized while
+// mapping columns (the soft-delete index on delete_time) and before the
+// foreign-key indexes finalizeIndexes adds — which is what lets a declared index
+// on an FK column suppress the redundant single-column one.
+//
+// The indexes are copied rather than shared: the resolved TableStructure is
+// memoized per message, and nameIndexes later writes a table-qualified name into
+// each index. One message materialized into two databases would otherwise have
+// the second run's names overwrite the first's.
+func appendDeclaredIndexes(t *schema.Table, declared []*schema.Index) {
+	for _, idx := range declared {
+		cols := make([]string, len(idx.Columns))
+		copy(cols, idx.Columns)
+		t.Indexes = append(t.Indexes, &schema.Index{
+			Name:    idx.Name,
+			Columns: cols,
+			Unique:  idx.Unique,
+		})
+	}
 }
 
 // populateColumns maps msg's fields onto t. Scalar/enum fields become columns;
@@ -46,7 +70,7 @@ func (ctx *buildCtx) buildTable(db *schema.Database, s *schema.Schema, msg *prot
 // (embedded children).
 func (ctx *buildCtx) populateColumns(db *schema.Database, s *schema.Schema, t *schema.Table, msg *protogen.Message) {
 	for _, f := range msg.Fields {
-		cs := ctx.backend.ReadColumn(f.Desc)
+		cs := ctx.columnOf(f.Desc)
 		if target := normalizableMessage(f); target != "" {
 			if cs.Skip {
 				continue

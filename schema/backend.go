@@ -1,15 +1,29 @@
 package schema
 
-// backend.go defines the seam between protokit's generic IR builder and a
-// generator's own annotation package (orm.v1, web3.v1). protokit reads the
-// standard google.api.* (AIP) structure itself, but it deliberately knows nothing
-// of any generator's custom options — so a generator supplies a Backend that
-// reads its own package into protokit's neutral config (during the build) and
-// folds in its own rendering (afterward). This is what lets a user annotate with
-// only orm.v1 (or only web3.v1) while protokit stays a generic, generator-neutral
-// library that imports no backend proto.
+// backend.go defines the original seam between protokit's generic IR builder and
+// a generator's own annotation package (orm.v1, web3.v1): a Backend read that
+// package into protokit's neutral config during the build and folded in its own
+// rendering afterward.
+//
+// Deprecated: implement [FacetReader] instead — optionally with [StructureReader]
+// and [Enricher] — plus a [LayoutResolver], and drive the build with
+// protokit.Build / protokit.RunPlugin. See facet.go.
+//
+// Backend conflated three separable concerns, and the middle one was the problem:
+//
+//   - reading a generator's annotations                  → FacetReader
+//   - deciding *neutral* names (database, schema, table) → protokit.v1, which
+//     protokit now reads itself, so two generators over one proto agree
+//   - a naming policy resolved from plugin config        → LayoutResolver
+//
+// Backend keeps working: [AdaptBackend] presents one as a FacetReader plus a
+// LayoutResolver, so an existing generator builds unchanged. The neutral config
+// types below (Datasource, TableStructure, ColumnStructure, IDStrategy) are not
+// deprecated — StructureReader still uses them.
 
-import "google.golang.org/protobuf/reflect/protoreflect"
+import (
+	"google.golang.org/protobuf/reflect/protoreflect"
+)
 
 // IDStrategy is protokit's neutral surrogate-primary-key strategy. A Backend maps
 // its own annotation enum onto it; protokit applies the synthesis.
@@ -50,6 +64,12 @@ type TableStructure struct {
 	Skip       bool       // exclude this message from all output
 	ID         IDStrategy // surrogate primary-key synthesis
 	Timestamps bool       // append created_at / updated_at
+
+	// Indexes are multi-column indexes declared on the message, beyond those
+	// protokit infers from AIP. Appended to the table after its columns are
+	// mapped and before foreign-key indexes are synthesized, so a declared index
+	// covering an FK column suppresses the redundant single-column one.
+	Indexes []*Index
 }
 
 // ColumnStructure is the field-level generic structure a Backend reads from its
@@ -71,6 +91,11 @@ type ColumnStructure struct {
 // fold in the generator's rendering (types, indexes, access, fingerprints). A
 // method reads its option off the descriptor's Options(); it must return a safe
 // zero value when the option is absent.
+//
+// Deprecated: implement [FacetReader] (optionally with [StructureReader] and
+// [Enricher]) plus a [LayoutResolver], and build with protokit.Build. A Backend
+// still works via [AdaptBackend]; this interface will be removed one major after
+// its consumers have migrated.
 type Backend interface {
 	ReadDatasource(protoreflect.FileDescriptor) Datasource
 	ReadTable(protoreflect.MessageDescriptor) TableStructure
@@ -82,3 +107,66 @@ type Backend interface {
 	// from its own config; false when it has none).
 	DedupeSchemaTable() bool
 }
+
+// AdaptBackend presents a deprecated [Backend] as the pair that replaced it: a
+// [FacetReader] (which also implements [StructureReader] and [Enricher]) and a
+// [LayoutResolver].
+//
+// The split is not quite even, because a Backend resolves grouping *internally* —
+// its ReadDatasource has already merged the generator's annotation with its config
+// file and decided version-stripping by the time protokit sees the result. So the
+// returned LayoutResolver reports no datasource opinion: applying one on top of an
+// already-resolved Datasource would resolve the same policy twice. It forwards
+// DedupeSchemaTable, which a Backend keeps as a separate method.
+//
+// The reader contributes no facets — a Backend has no notion of them — so
+// [Facet] finds nothing under its key. Its structure and enrichment behave exactly
+// as before, which is what lets a generator upgrade protokit without touching its
+// own code.
+//
+// A nil Backend yields (nil, nil): a build with no generator vocabulary at all,
+// which is a valid pure-AIP + protokit.v1 build.
+func AdaptBackend(b Backend) (FacetReader, LayoutResolver) {
+	if b == nil {
+		return nil, nil
+	}
+	a := backendAdapter{b}
+	return a, a
+}
+
+// backendAdapter implements FacetReader, StructureReader, Enricher, and
+// LayoutResolver over a deprecated Backend.
+type backendAdapter struct{ b Backend }
+
+// Key namespaces the adapter's (empty) facet table. It is deliberately generic:
+// a Backend never declared a vocabulary name, and inventing one per generator
+// would let a migrating plugin collide with the real reader it later registers.
+func (backendAdapter) Key() string { return "backend" }
+
+// A Backend contributes no facets — it predates them.
+func (backendAdapter) ReadFile(protoreflect.FileDescriptor) (any, error)       { return nil, nil }
+func (backendAdapter) ReadMessage(protoreflect.MessageDescriptor) (any, error) { return nil, nil }
+func (backendAdapter) ReadField(protoreflect.FieldDescriptor) (any, error)     { return nil, nil }
+
+func (a backendAdapter) ReadDatasource(d protoreflect.FileDescriptor) Datasource {
+	return a.b.ReadDatasource(d)
+}
+
+func (a backendAdapter) ReadTable(d protoreflect.MessageDescriptor) TableStructure {
+	return a.b.ReadTable(d)
+}
+
+func (a backendAdapter) ReadColumn(d protoreflect.FieldDescriptor) ColumnStructure {
+	return a.b.ReadColumn(d)
+}
+
+// Enrich forwards to the Backend, which only ever saw the databases.
+func (a backendAdapter) Enrich(ir *IR) error { return a.b.Enrich(ir.Databases) }
+
+// ResolveDatasource reports no opinion: ReadDatasource above already returned a
+// fully-resolved Datasource, config included.
+func (backendAdapter) ResolveDatasource(string) (database, schema string, stripVersion, ok bool) {
+	return "", "", false, false
+}
+
+func (a backendAdapter) DedupeSchemaTable() bool { return a.b.DedupeSchemaTable() }

@@ -1,0 +1,23 @@
+version: v2
+
+# Regenerates the pre-compiled Go stubs for protokit's own option protos
+# (protokit.v1).
+#
+# Run:  buf generate
+# Out:  protobuf/protokitpbv1/*.pb.go
+#
+# The module= opt strips the protokit module prefix from each go_package, so the
+# stubs land beside the .proto sources they are generated from:
+#   go_package .../protokit/protobuf/protokitpbv1 -> protobuf/protokitpbv1
+#
+# Keeping sources and stubs under one directory is deliberate: protobuf/ is the
+# whole proto story, and a `git diff -- protobuf/` shows a schema change and its
+# regenerated stubs together (which is exactly what CI's staleness gate checks).
+inputs:
+  - directory: protobuf
+
+plugins:
+  - remote: buf.build/protocolbuffers/go:v1.36.11
+    out: .
+    opt:
+      - module=github.com/the-protobuf-project/protokit
