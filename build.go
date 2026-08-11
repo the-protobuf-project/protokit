@@ -27,10 +27,10 @@ import (
 // their first value (column.go), every foreign-key column is indexed
 // (indexForeignKeys), and embedded child relations cascade/null on delete
 // (embed_fk.go). All remain overridable via the generator's options.
-func buildDatabases(p *protogen.Plugin, diags *diagnostics, backend schema.Backend) ([]*schema.Database, error) {
+func buildDatabases(p *protogen.Plugin, diags *diagnostics, readers []schema.FacetReader, layout schema.LayoutResolver) ([]*schema.Database, error) {
 	byName := map[string]*schema.Database{}
 	var order []*schema.Database
-	ctx := newBuildCtx(p, backend)
+	ctx := newBuildCtx(p, diags, readers, layout)
 
 	for _, f := range p.Files {
 		if !f.Generate {
@@ -52,7 +52,7 @@ func buildDatabases(p *protogen.Plugin, diags *diagnostics, backend schema.Backe
 	// after embeds so every potential target table already exists.
 	ctx.normalizeM2M(diags)
 
-	dedupeSchemaTable := backend.DedupeSchemaTable()
+	dedupeSchemaTable := layout != nil && layout.DedupeSchemaTable()
 	for _, db := range order {
 		// Rename schema-stuttering table names before relations resolve, so FK
 		// references pick up the final names (opt-in via the generator's config).
@@ -63,6 +63,9 @@ func buildDatabases(p *protogen.Plugin, diags *diagnostics, backend schema.Backe
 		resolveRelations(db, diags)
 		dedupeEnums(db, diags)
 	}
+	// Emitted last so the aggregate counts cover every node the build touched,
+	// including the embedded children materialized above.
+	ctx.flushDeprecations()
 	return order, nil
 }
 
@@ -98,7 +101,7 @@ func (ctx *buildCtx) mergeFile(byName map[string]*schema.Database, f *protogen.F
 	// and layout config, plus whether the derived schema is version-stripped.
 	// protokit owns no config, so it only supplies the package-name database
 	// fallback and the resource-type-derived schema.
-	ds := ctx.backend.ReadDatasource(f.Desc)
+	ds := ctx.datasourceOf(f.Desc)
 	name := ds.Database
 	if name == "" {
 		parts := strings.Split(string(f.Desc.Package()), ".")
@@ -143,7 +146,7 @@ func (ctx *buildCtx) addFileTables(db *schema.Database, f *protogen.File, schema
 		if msg.Desc.IsMapEntry() {
 			continue
 		}
-		ts := ctx.backend.ReadTable(msg.Desc)
+		ts := ctx.tableOf(msg.Desc)
 		if ts.Skip {
 			continue
 		}

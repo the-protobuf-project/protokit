@@ -28,14 +28,34 @@ var Update = flag.Bool("update", false, "rewrite golden files with current outpu
 // under -update). registry supplies the targets to run; defaultTargets is used
 // when the case has no "targets" file.
 //
-// newBackend builds the generator's Backend for this case, receiving the case
-// directory so the generator can read any per-case config it owns (its own
+// Deprecated: use [RunPluginCase], which takes a [protokit.Plugin] (facet readers
+// plus a layout resolver) instead of a [schema.Backend]. RunCase adapts the
+// backend internally and behaves identically; it will be removed one major after
+// the Backend SPI.
+func RunCase(t *testing.T, dir string, registry map[string]schema.Target, defaultTargets []string, newBackend func(caseDir string) schema.Backend) {
+	RunPluginCase(t, dir, defaultTargets, func(caseDir string) protokit.Plugin {
+		reader, layout := schema.AdaptBackend(newBackend(caseDir))
+		return protokit.Plugin{
+			Registry: registry,
+			Readers:  []protokit.FacetReader{reader},
+			Layout:   layout,
+		}
+	})
+}
+
+// RunPluginCase compiles dir's protos in-process and, for each target, checks the
+// generated output against dir/golden/<target>/ byte-for-byte (or rewrites it
+// under -update).
+//
+// newPlugin builds the generator's [protokit.Plugin] for this case, receiving the
+// case directory so the generator can read any per-case config it owns (its own
 // layout YAML, a "stores" marker, …). The harness stays generator-neutral: it
 // knows nothing of orm.yaml/web3.yaml, stores, go_module, or otel — those live
 // entirely in the generator's factory.
-func RunCase(t *testing.T, dir string, registry map[string]schema.Target, defaultTargets []string, newBackend func(caseDir string) schema.Backend) {
+func RunPluginCase(t *testing.T, dir string, defaultTargets []string, newPlugin func(caseDir string) protokit.Plugin) {
 	req := BuildRequest(t, dir)
-	backend := newBackend(dir)
+	pl := newPlugin(dir)
+	registry := pl.Registry
 
 	for _, target := range CaseTargets(t, dir, defaultTargets) {
 		if _, ok := registry[target]; !ok {
@@ -44,7 +64,7 @@ func RunCase(t *testing.T, dir string, registry map[string]schema.Target, defaul
 			continue
 		}
 		t.Run(target, func(t *testing.T) {
-			files := runTarget(t, req, target, registry, backend)
+			files := runTarget(t, req, target, pl)
 			goldenDir := filepath.Join(dir, "golden", target)
 
 			if *Update {
@@ -76,11 +96,11 @@ func CaseTargets(t *testing.T, dir string, defaults []string) []string {
 	return out
 }
 
-// runTarget executes one backend through the real plugin entry point (Run,
-// selecting from registry) and returns the generated files as path → content.
-// Everything generator-specific (grouping config, stores, go module, otel) is
-// baked into backend by the caller's factory, so protokit needs only the target.
-func runTarget(t *testing.T, req *pluginpb.CodeGeneratorRequest, target string, registry map[string]schema.Target, backend schema.Backend) map[string]string {
+// runTarget executes one target through the real plugin entry point (RunPlugin)
+// and returns the generated files as path → content. Everything
+// generator-specific (grouping config, stores, go module, otel) is baked into pl
+// by the caller's factory, so protokit needs only the target name.
+func runTarget(t *testing.T, req *pluginpb.CodeGeneratorRequest, target string, pl protokit.Plugin) map[string]string {
 	t.Helper()
 
 	p, err := protogen.Options{}.New(req)
@@ -88,7 +108,7 @@ func runTarget(t *testing.T, req *pluginpb.CodeGeneratorRequest, target string, 
 		t.Fatalf("protogen: %v", err)
 	}
 	opts := protokit.Options{Target: target}
-	if err := protokit.Run(p, opts, registry, backend); err != nil {
+	if err := protokit.RunPlugin(p, opts, pl); err != nil {
 		t.Fatalf("generate %s: %v", target, err)
 	}
 	resp := p.Response()

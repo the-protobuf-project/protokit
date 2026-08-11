@@ -16,19 +16,23 @@ add non-proto sources and multiple output languages), a **[GraphQL frontend](#be
 (introspection/SDL → IR → typed client), and shared Go-emit helpers — all reused
 across every target instead of re-implemented per plugin.
 
-It ships **no binary and no user-facing proto options**. Generators import it.
+It ships **no binary**, and exactly one proto module: `protokit.v1`, the neutral
+vocabulary that decides what things are *named*. Everything storage- or
+chain-specific stays with the generator that owns it. Generators import protokit.
 
 ```mermaid
 flowchart LR
     P[".proto files"] --> AIP
     subgraph K["protokit — generic engine"]
-        AIP["parse + read AIP<br/>google.api.*"] --> IR["build the IR<br/>tables, columns, FKs,<br/>enums, indexes, synthesis"]
+        AIP["parse + read<br/>google.api.* + protokit.v1"] --> IR["build the IR<br/>tables, columns, FKs,<br/>enums, indexes, synthesis"]
     end
     subgraph Author["your generator, e.g. protoc-gen-orm"]
-        B["Backend<br/>reads your annotations"]
+        R["FacetReader<br/>reads your annotations"]
+        L["LayoutResolver<br/>reads your config"]
         T["Target<br/>renders output"]
     end
-    B -.->|reads structure| IR
+    R -.->|attaches facets| IR
+    L -.->|naming policy| IR
     IR --> T
     T --> OUT["generated files"]
 ```
@@ -41,22 +45,55 @@ walk the descriptors, honor AIP, group messages into a schema tree, resolve
 foreign keys, synthesize surrogate keys and audit timestamps, name and validate
 indexes, and template it all out with reproducible banners and golden tests.
 
-protokit implements that once, generically, and exposes two small interfaces.
+protokit implements that once, generically, and exposes a few small interfaces.
 Your generator stays focused on its target; two generators built on protokit
-(a database one and a blockchain one) share the IR and behave consistently.
+(a database one and a blockchain one) share the IR and — enforced by a test —
+derive the same names from the same protos.
 
-## The two extension points
+## The neutral vocabulary: `protokit.v1`
 
-A generator implements **`schema.Backend`** (read *its own* annotation package
-into the IR) and **`schema.Target`** (render the IR):
+protokit ships one small proto module of its own — package `protokit.v1`, under
+[`protobuf/protokit/v1/`](protobuf/protokit/v1) — and reads it directly:
+
+```proto
+option (protokit.v1.datasource) = {database: "bookstore_db" schema: "bookstore"};
+
+message Author {
+  option (google.api.resource) = {type: "bookstore.v1/Author" …};
+  option (protokit.v1.table) = {id: ID_STRATEGY_ULID, timestamps: true};
+
+  string internal_notes = 4 [(protokit.v1.column) = {skip: true}];
+}
+```
+
+It expresses exactly the structure that decides **what things are named and which
+of them exist** — and nothing storage-specific. That line matters: a Solidity
+generator and a Postgres generator must agree on what a table is called; they have
+no shared opinion about `VARCHAR(500)`.
+
+It lives here rather than in any plugin because every plugin imports protokit, so
+a vocabulary the engine reads cannot live downstream of the engine. Everything
+else stays with the generator that owns it.
+
+## The extension points
+
+A generator supplies **facet readers** (its own annotations), an optional
+**layout resolver** (its own config), and **targets** (rendering):
 
 ```go
-// Backend bridges protokit to your annotation package (protokit imports none).
-type Backend interface {
-    ReadDatasource(protoreflect.FileDescriptor) Datasource       // grouping
-    ReadTable(protoreflect.MessageDescriptor) TableStructure     // name/skip/id/timestamps
-    ReadColumn(protoreflect.FieldDescriptor) ColumnStructure     // name/skip/FK actions
-    Enrich(dbs []*Database) error                                // fold in your rendering
+// FacetReader carries your annotation package into the IR — as side-tables keyed
+// by node, never as fields on the IR. protokit imports none of it.
+type FacetReader interface {
+    Key() string                                          // "orm.v1"
+    ReadFile(protoreflect.FileDescriptor) (any, error)
+    ReadMessage(protoreflect.MessageDescriptor) (any, error)
+    ReadField(protoreflect.FieldDescriptor) (any, error)
+}
+
+// LayoutResolver is the naming policy you resolve from your own config file.
+type LayoutResolver interface {
+    ResolveDatasource(pkg string) (database, schema string, stripVersion, ok bool)
+    DedupeSchemaTable() bool
 }
 
 // Target renders the finished IR.
@@ -64,16 +101,66 @@ type Target interface {
     Name() string                                       // "gorm", "solidity", …
     Generate(p *protogen.Plugin, dbs []*Database) error
 }
+
+// IRTarget is a Target that also wants the facets.
+type IRTarget interface {
+    Target
+    GenerateIR(p *protogen.Plugin, ir *IR) error
+}
 ```
 
 Wire them into a `main`:
 
 ```go
-protokit.Run(p, opts, map[string]schema.Target{"sql": &sqlTarget{}}, myBackend{})
+protokit.RunPlugin(p, opts, protokit.Plugin{
+    Registry: map[string]schema.Target{"sql": &sqlTarget{}},
+    Readers:  []protokit.FacetReader{myReader{}},
+    Layout:   myLayout,
+})
 ```
 
-protokit reads AIP itself, calls the backend's `Read*` methods while building the
-IR, runs `Enrich`, finalizes indexes, then hands the IR to the selected target.
+protokit reads AIP and `protokit.v1` itself, collects each reader's facets, runs
+any enrichment, finalizes indexes, then hands the IR to the selected target.
+Registration is explicit at `RunPlugin` — there is no global registry and no
+`init()`, so a run sees exactly what its caller passed.
+
+Read a facet back by node:
+
+```go
+opts, ok := protokit.Facet[*ColumnFacet](ir, "orm.v1", col.Node)
+```
+
+`col.Node` is a `NodeID` — the fully-qualified proto name, always derived from the
+descriptor. Never from `Table.Name` or `Column.Name`: those are outputs, and a
+table rename must not orphan a facet lookup.
+
+Two optional interfaces exist for the narrow cases where a reader must influence
+the build rather than merely annotate it — `StructureReader` (a deprecated
+vocabulary, or the referential actions `protokit.v1` doesn't express) and
+`Enricher` (constraints the index pass reads). Each doc comment explains why it is
+unavoidable.
+
+> **Migrating from `schema.Backend`?** It still works — protokit adapts it
+> internally — and `Run`/`BuildIR` keep their signatures. Both are deprecated;
+> see [`schema/backend.go`](schema/backend.go) for the mapping.
+
+## Two plugins, one set of names
+
+The property all of the above exists to protect:
+
+```go
+golden.IRAgreement(t, caseDir, pluginA, pluginB)
+```
+
+Builds the IR under both plugins' readers and asserts identical database, schema,
+table, and column names plus primary- and foreign-key resolution, naming the
+diverging `NodeID` on failure. Before `protokit.v1`, each generator resolved those
+names from its own annotations and its own config, so a second generator over the
+same protos silently disagreed. This is the test that keeps that from coming back.
+
+Its companion, `golden.Determinism(t, caseDir, plugin)`, generates twice and
+byte-compares — catching the map-ranged-into-output bug that a committed golden
+file cannot.
 
 ## The IR
 

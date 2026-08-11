@@ -7,9 +7,11 @@
 //  2. google.api.field_behavior → NotNull, PrimaryKey on Column
 //  3. google.api.resource_reference → ForeignKey
 //  4. protokit.v1.datasource / .table / .column → generic structure AIP can't express
+//  5. the plugin's LayoutResolver, then protokit's package-path defaults
 //
-// Backend-specific rendering (orm.v1, web3.v1) is folded in afterward by a
-// generator-supplied Enricher, keeping this IR and its builder generic.
+// protokit reads 1-4 itself. Generator-specific rendering (orm.v1, web3.v1) is
+// folded in afterward by a generator-supplied Enricher and carried per node as
+// facets (see facet.go), keeping this IR and its builder generic.
 package schema
 
 import (
@@ -19,7 +21,12 @@ import (
 )
 
 // Target is implemented by every output backend (prisma, gorm, sql).
-// It receives the fully-built IR and writes output via protogen.Plugin.
+// It receives the built schema tree and writes output via protogen.Plugin.
+//
+// A target that needs more than the neutral tree — its generator's own per-node
+// options, carried as facets — implements [IRTarget] as well and receives the
+// whole [IR]. Target stays the minimum a renderer must satisfy so a generator can
+// migrate one target at a time.
 type Target interface {
 	// Name returns the short identifier matched against the "target" plugin opt.
 	// Example: "prisma", "gorm", "sql".
@@ -27,6 +34,27 @@ type Target interface {
 
 	// Generate writes one or more output files for every database in dbs.
 	Generate(p *protogen.Plugin, dbs []*Database) error
+}
+
+// IRTarget is a Target that renders from the full IR rather than the databases
+// alone, so it can read the facets its generator's readers attached to each node
+// (a column's SQL type, a table's access model) with [Facet].
+//
+// protokit prefers GenerateIR when a target implements it and falls back to
+// Generate otherwise. Implement both — the usual shape is a Generate that wraps
+// its argument and delegates:
+//
+//	func (g *Generator) Generate(p *protogen.Plugin, dbs []*schema.Database) error {
+//		return g.GenerateIR(p, &schema.IR{Databases: dbs})
+//	}
+//
+// which keeps the target usable from the deprecated Backend path, where no facets
+// exist to read.
+type IRTarget interface {
+	Target
+
+	// GenerateIR writes one or more output files from the full IR.
+	GenerateIR(p *protogen.Plugin, ir *IR) error
 }
 
 // Database is the top-level output unit. Proto files that declare the same

@@ -38,6 +38,50 @@ jobs:
         with:
           version: v2.12.2
 
+  proto:
+    # protokit.v1 is the neutral annotation vocabulary protokit reads directly
+    # (protobuf/protokit/v1/). Its Go stubs are committed under
+    # protobuf/protokitpbv1/ so consumers need no code-generation step — which only
+    # works if the committed stubs can never drift from the .proto sources, hence
+    # the staleness gate.
+    name: Proto
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: bufbuild/buf-setup-action@v1
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+      - run: buf lint
+      - run: buf format --diff --exit-code
+      - run: buf build
+      - run: buf generate
+      - name: Fail if the committed stubs are stale
+        run: |
+          git diff --exit-code -- protobuf/ || {
+            echo "protobuf/protokitpbv1/ is stale — run 'buf generate' and commit the result"
+            exit 1
+          }
+
+  api-lint:
+    # Google's API linter checks protokit.v1 against the AIP conventions the IR is
+    # built around. protokit reads google.api.resource / field_behavior /
+    # resource_reference as its primary inference sources, so its own vocabulary
+    # holding to the same conventions is not decoration — it is the thing keeping
+    # the neutral layer honest.
+    name: API lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Pinned to the exact release: the action's README advertises @v1, but no
+      # moving v1 tag has been pushed — v1.0.0 is the only tag that resolves.
+      - uses: the-protobuf-project/setup-google-api-linter@v1.0.0
+        with:
+          # Run from the module root so each import resolves the way buf sees it
+          # ("protokit/v1/column.proto"), not relative to the repository root.
+          working-directory: protobuf
+          paths: protokit/**/*.proto
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
   test:
     # Build and test the library natively on Linux and Windows, on both x86-64
     # and arm64 (GitHub-hosted arm64 runners are free for public repositories).

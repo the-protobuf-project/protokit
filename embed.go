@@ -34,13 +34,53 @@ import (
 )
 
 // buildCtx carries the cross-file state the lossless build needs: every proto
-// message by full name (so a child defined in another file can be materialized)
-// and the queue of embed requests collected while building tables.
+// message by full name (so a child defined in another file can be materialized),
+// the queue of embed requests collected while building tables, and the structure
+// sources (see structure.go) every pass resolves names through.
 type buildCtx struct {
 	msgIndex map[string]*protogen.Message
 	embeds   []*embedReq
-	m2m      []*m2mReq      // repeated resource_reference fields awaiting join-table synthesis
-	backend  schema.Backend // reads the generator's own structural options + grouping; never nil during a build
+	m2m      []*m2mReq // repeated resource_reference fields awaiting join-table synthesis
+
+	// structs are the registered StructureReaders in sorted Key order, each paired
+	// with its key for diagnostics. Consulted only where protokit.v1 said nothing.
+	structs []keyedStructure
+	// layout is the plugin's naming policy; nil means "no policy, use defaults".
+	layout schema.LayoutResolver
+	// diags collects the deprecated-twin lint raised during resolution.
+	diags *diagnostics
+
+	// Structure reads are memoized: the build visits each message and each field
+	// more than once by design, and re-reading options per visit per reader adds up.
+	dsCache  map[schema.NodeID]schema.Datasource
+	tblCache map[schema.NodeID]schema.TableStructure
+	colCache map[schema.NodeID]schema.ColumnStructure
+
+	// deprecations aggregates the deprecated-vocabulary uses seen during the
+	// build, keyed "<reader key>/<option>", and flushed as one diagnostic per
+	// entry. See noteDeprecated.
+	deprecations map[string]*deprecationNote
+}
+
+// deprecationNote counts uses of one deprecated option and remembers the first
+// node that used it, so the flushed diagnostic can be specific without being one
+// line per field.
+type deprecationNote struct {
+	key    string // the reader's facet key ("orm.v1-compat")
+	option string // the option path ("table.timestamps")
+	note   string // the reader's deprecation clause
+	first  schema.NodeID
+	count  int
+}
+
+// keyedStructure pairs a StructureReader with the facet key it was registered
+// under, so a diagnostic can name the vocabulary an option came from, plus the
+// deprecation note when the reader is a compatibility shim.
+type keyedStructure struct {
+	key        string
+	reader     schema.StructureReader
+	deprecated bool
+	note       string // from schema.DeprecatedStructure.StructureDeprecation
 }
 
 // embedReq is one message-typed field that must become a relation.
@@ -64,7 +104,11 @@ type embedReq struct {
 // transitive descriptor set in the request, so no source or network fetch is
 // needed. Unreferenced imported messages cost only a map entry: a message is
 // only materialized when a field actually relationalizes to it.
-func newBuildCtx(p *protogen.Plugin, backend schema.Backend) *buildCtx {
+//
+// readers arrive already sorted by Key; the StructureReaders among them are
+// extracted once here so every structure resolution walks a small slice instead
+// of type-asserting the full reader set per node.
+func newBuildCtx(p *protogen.Plugin, diags *diagnostics, readers []schema.FacetReader, layout schema.LayoutResolver) *buildCtx {
 	idx := map[string]*protogen.Message{}
 	var walk func(msgs []*protogen.Message)
 	walk = func(msgs []*protogen.Message) {
@@ -76,7 +120,30 @@ func newBuildCtx(p *protogen.Plugin, backend schema.Backend) *buildCtx {
 	for _, f := range p.Files {
 		walk(f.Messages)
 	}
-	return &buildCtx{msgIndex: idx, backend: backend}
+
+	var structs []keyedStructure
+	for _, r := range readers {
+		sr, ok := r.(schema.StructureReader)
+		if !ok {
+			continue
+		}
+		ks := keyedStructure{key: r.Key(), reader: sr}
+		if d, ok := r.(schema.DeprecatedStructure); ok {
+			ks.deprecated, ks.note = true, d.StructureDeprecation()
+		}
+		structs = append(structs, ks)
+	}
+
+	return &buildCtx{
+		msgIndex:     idx,
+		structs:      structs,
+		layout:       layout,
+		diags:        diags,
+		dsCache:      map[schema.NodeID]schema.Datasource{},
+		tblCache:     map[schema.NodeID]schema.TableStructure{},
+		colCache:     map[schema.NodeID]schema.ColumnStructure{},
+		deprecations: map[string]*deprecationNote{},
+	}
 }
 
 // normalizableMessage returns the referenced message's full name when field f is
@@ -167,7 +234,7 @@ func (ctx *buildCtx) materialize(db *schema.Database, schemaName string, msg *pr
 	schemaName = ctx.valueObjectSchema(schemaName, msg)
 	s := schemaByName(db, schemaName)
 	srcPath := msg.Desc.ParentFile().Path()
-	ts := ctx.backend.ReadTable(msg.Desc)
+	ts := ctx.tableOf(msg.Desc)
 	name := ts.Table
 	if name == "" {
 		name = naming.SnakePlural(string(msg.Desc.Name()))
@@ -184,6 +251,7 @@ func (ctx *buildCtx) materialize(db *schema.Database, schemaName string, msg *pr
 		PgSchema:     schemaName,
 		ValueObject:  true, // materialized from an embedded message, not a resource
 		Source:       msg.Desc,
+		Node:         schema.NodeIDOfMessage(msg.Desc),
 	}
 	// Append before populating columns so a self/cyclic reference finds the table.
 	s.Tables = append(s.Tables, t)
@@ -191,6 +259,7 @@ func (ctx *buildCtx) materialize(db *schema.Database, schemaName string, msg *pr
 	applyAIPSystemFields(t)
 	applyIDStrategy(t, ts.ID)
 	applyTimestamps(t, ts.Timestamps)
+	appendDeclaredIndexes(t, ts.Indexes)
 	ensurePK(t)
 	return t
 }
@@ -201,7 +270,7 @@ func (ctx *buildCtx) materialize(db *schema.Database, schemaName string, msg *pr
 // assigns none. A config-derived schema obeys the same version-stripping
 // treatment as resource-derived schemas in mergeFile.
 func (ctx *buildCtx) valueObjectSchema(fallback string, msg *protogen.Message) string {
-	ds := ctx.backend.ReadDatasource(msg.Desc.ParentFile())
+	ds := ctx.datasourceOf(msg.Desc.ParentFile())
 	s := ds.Schema
 	if s == "" {
 		return fallback
