@@ -52,6 +52,26 @@ gates, and documentation that make the existing contract hold.
   vocabulary is guaranteed by a shared reader implementation, not by protokit
   ownership.
 
+### Fixed
+
+- **Golden trees are pinned to LF** (`.gitattributes`). Golden comparison is
+  byte-for-byte, and git's default `core.autocrlf=true` on Windows rewrites every
+  committed LF to CRLF on checkout — so a golden tree fails on the line ending
+  alone. This surfaced on the new Backend case and would have broken the
+  `windows-latest` and `windows-11-arm` CI jobs.
+
+  **Downstream modules driving `golden.RunPluginCase` or `golden.RunCase` with
+  their own testdata need the same rule**, or their cases fail on Windows:
+
+  ```gitattributes
+  <testdata dir>/** text eol=lf
+  ```
+
+  Pin the input `.proto` files as well as the expected output: doc comments are
+  read from the proto source and forwarded into generated output, so a CRLF input
+  can put a stray carriage return inside a golden line rather than only at the end
+  of one. `golden.RunPluginCase`'s doc comment now states this.
+
 ### Deprecated
 
 No new deprecations. The following remain deprecated and fully supported, and are

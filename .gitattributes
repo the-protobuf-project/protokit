@@ -3,3 +3,14 @@
 
 # In case you also have .proto, make sure they’re counted
 *.proto linguist-detectable=true
+
+# Golden test fixtures are compared byte-for-byte, so git must not rewrite them
+# on checkout. Without this, git's default core.autocrlf=true on Windows turns
+# every committed LF into CRLF and the comparison fails on the line ending alone
+# — which is what the windows-latest and windows-11-arm CI jobs would have hit.
+#
+# The case .proto files are pinned too, not just the expected output: doc
+# comments are read out of the proto source and forwarded into generated output,
+# so a CRLF checkout of an input file can put a stray \r inside a golden line
+# rather than only at the end of one.
+golden/testdata/** text eol=lf
