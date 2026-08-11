@@ -1,0 +1,103 @@
+syntax = "proto3";
+
+// The case protos for the deprecated Backend shim's end-to-end golden test.
+//
+// These carry AIP annotations only — no generator vocabulary. The structure a
+// generator would normally annotate (id strategy, timestamps, referential
+// actions, a table rename, a skip) is supplied by the fake Backend in
+// backend_shim_test.go instead, which is the entire point: the case exercises
+// what a Backend contributes, not what any particular annotation module spells.
+package bookstore.v1;
+
+import "google/api/field_behavior.proto";
+import "google/api/resource.proto";
+
+// An author of books.
+message Author {
+  option (google.api.resource) = {
+    type: "bookstore.v1/Author"
+    pattern: "authors/{author}"
+    plural: "authors"
+  };
+
+  // The resource name of the author.
+  string name = 1 [(google.api.field_behavior) = IDENTIFIER];
+
+  // The author's public display name.
+  string display_name = 2 [(google.api.field_behavior) = REQUIRED];
+
+  // Contact address, absent for pseudonymous authors.
+  optional string email = 3;
+}
+
+// A book carried by the store.
+message Book {
+  option (google.api.resource) = {
+    type: "bookstore.v1/Book"
+    pattern: "books/{book}"
+    plural: "books"
+  };
+
+  // The resource name of the book.
+  string name = 1 [(google.api.field_behavior) = IDENTIFIER];
+
+  // The book's title.
+  string title = 2 [(google.api.field_behavior) = REQUIRED];
+
+  // The author who wrote this book.
+  string author = 3 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference) = {type: "bookstore.v1/Author"}
+  ];
+
+  // The shelf this book is classified under.
+  Genre genre = 4;
+
+  // Physical page count, absent for digital-only editions.
+  optional int32 page_count = 5;
+}
+
+// A physical branch of the store. Its derived table name ("bookstore_branches")
+// stutters with its version-stripped schema ("bookstore"), so it exercises the
+// de-stuttering pass the Backend opts into via DedupeSchemaTable.
+message BookstoreBranch {
+  option (google.api.resource) = {
+    type: "bookstore.v1/BookstoreBranch"
+    pattern: "bookstoreBranches/{bookstore_branch}"
+    plural: "bookstoreBranches"
+  };
+
+  // The resource name of the branch.
+  string name = 1 [(google.api.field_behavior) = IDENTIFIER];
+
+  // Street address of the branch.
+  string address = 2 [(google.api.field_behavior) = REQUIRED];
+}
+
+// An internal audit record. The Backend skips it, so no table is emitted —
+// proving TableStructure.Skip still reaches the build through the adapter.
+message AuditEntry {
+  option (google.api.resource) = {
+    type: "bookstore.v1/AuditEntry"
+    pattern: "auditEntries/{audit_entry}"
+    plural: "auditEntries"
+  };
+
+  // The resource name of the audit entry.
+  string name = 1 [(google.api.field_behavior) = IDENTIFIER];
+
+  // What happened.
+  string detail = 2;
+}
+
+// Literary genre.
+enum Genre {
+  // Default, unset genre.
+  GENRE_UNSPECIFIED = 0;
+
+  // Invented narrative.
+  GENRE_FICTION = 1;
+
+  // Factual writing.
+  GENRE_NONFICTION = 2;
+}

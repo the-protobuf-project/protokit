@@ -52,6 +52,17 @@ func RunCase(t *testing.T, dir string, registry map[string]schema.Target, defaul
 // layout YAML, a "stores" marker, …). The harness stays generator-neutral: it
 // knows nothing of orm.yaml/web3.yaml, stores, go_module, or otel — those live
 // entirely in the generator's factory.
+//
+// Comparison is byte-for-byte, so a module committing a golden tree must stop git
+// from rewriting it on checkout. Add to .gitattributes:
+//
+//	<testdata dir>/** text eol=lf
+//
+// Without it, git's default core.autocrlf=true on Windows turns every committed
+// LF into CRLF and every case fails on the line ending alone. Pin the input
+// .proto files as well as the expected output: doc comments are read from the
+// proto source and forwarded into generated output, so a CRLF input can put a
+// stray carriage return inside a golden line rather than only at the end of one.
 func RunPluginCase(t *testing.T, dir string, defaultTargets []string, newPlugin func(caseDir string) protokit.Plugin) {
 	req := BuildRequest(t, dir)
 	pl := newPlugin(dir)

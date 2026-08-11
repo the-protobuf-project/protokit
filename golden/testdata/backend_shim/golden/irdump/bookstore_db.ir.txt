@@ -1,0 +1,32 @@
+database bookstore_db
+  provider: postgres
+  opt go_module = example.com/test/gen
+  opt stores = true
+
+  schema bookstore
+    table writers (model Author, node bookstore.v1.Author)
+      pk: id
+      column id           type=uuid       pk notnull generated=uuid
+      column name         type=string     notnull unique
+      column full_name    type=string     notnull
+      column email        type=string     optional unique
+      hasmany Book via author
+    table books (model Book, node bookstore.v1.Book)
+      pk: id
+      column id           type=ulid       pk notnull generated=ulid
+      column name         type=string     notnull unique
+      column title        type=string     notnull index
+      column author       type=uuid       notnull fk->Author
+      column genre        type=enum       optional
+      column page_count   type=int32      optional
+      column created_at   type=timestamp  notnull autocreate
+      column updated_at   type=timestamp  notnull autoupdate
+      fk author -> bookstore.writers.id on_delete=CASCADE on_update=RESTRICT
+      index idx_book_title_genre [title genre]
+      index idx_books_author [author]
+    table branches (model BookstoreBranch, node bookstore.v1.BookstoreBranch)
+      pk: id
+      column id           type=ulid       pk notnull generated=ulid
+      column name         type=string     notnull unique
+      column address      type=string     notnull
+    enum Genre [FICTION NONFICTION]
