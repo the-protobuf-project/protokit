@@ -38,6 +38,27 @@ jobs:
         with:
           version: v2.12.2
 
+  boundary:
+    # protokit is the neutral layer: it reads AIP and protokit.v1, and every other
+    # vocabulary reaches it through the SPI rather than through an import. The
+    # moment protokit imports orm.v1, web3.v1, or entity.v1 directly, the engine
+    # gains a compile-time dependency on one of its own consumers and the
+    # vocabularies stop being pluggable.
+    #
+    # This runs as its own job rather than only inside `go test ./...` so the gate
+    # is a named check on the pull request. Violating it is an architectural
+    # change, and it should be visible as one rather than as a line in a test log.
+    name: Import boundary
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: protokit imports no plugin proto module
+        run: go test -run 'TestNoPluginProtoImports|TestBoundaryPatterns|TestNeutralTypesStayPlain' -v .
+
   proto:
     # protokit.v1 is the neutral annotation vocabulary protokit reads directly
     # (protobuf/protokit/v1/). Its Go stubs are committed under
