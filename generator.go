@@ -2,13 +2,16 @@
 // plugins. It parses plugin options, builds the schema IR (see build.go), and
 // dispatches to a chosen schema.Target.
 //
-// protokit reads two vocabularies itself: the standard google.api.* (AIP)
-// annotations, and protokit.v1 — the neutral structure that decides what things
-// are named (see protobuf/protokit/v1/). Everything past that is supplied by the
-// caller, so this package imports no generator: each plugin binary passes its own
+// protokit reads one vocabulary itself: the standard google.api.* (AIP)
+// annotations. Everything past that is supplied by the caller, so this package
+// imports no generator and no annotation module: each plugin binary passes its own
 // target registry, its own facet readers (which read that generator's annotation
 // package), and its own layout resolver to Run. The same frontend thus drives the
-// database (orm) and chain (web3) generators without either being visible here.
+// database (store) and chain (web3) generators without either being visible here.
+//
+// That includes the *neutral* vocabulary two plugins must agree on. It is not read
+// here; it arrives as a reader they both import (entity.v1, shipped from store).
+// See docs/ownership.md for why it lives there rather than in this repository.
 package protokit
 
 import (
@@ -70,14 +73,15 @@ type Plugin struct {
 }
 
 // Build builds the IR for every generate-flagged proto file: it infers databases
-// from the generic AIP structure plus protokit.v1 and the layout policy, collects
-// each reader's facets, runs any enrichment, finalizes indexes, lints, resolves
-// diagnostics per opts.Strict, and stamps the plugin/protoc versions onto each
-// database. It performs no rendering — pass the result to a schema.Target.
+// from the generic AIP structure plus whatever the readers and the layout policy
+// contribute, collects each reader's facets, runs any enrichment, finalizes
+// indexes, lints, resolves diagnostics per opts.Strict, and stamps the
+// plugin/protoc versions onto each database. It performs no rendering — pass the
+// result to a schema.Target.
 //
 // readers are the generator's bridge to its own annotation packages; layout is the
 // naming policy it resolved from its own config. protokit loads no config file of
-// its own. Both may be empty/nil, which yields a pure AIP + protokit.v1 build.
+// its own. Both may be empty/nil, which yields a pure AIP build.
 //
 // Enrichment runs on the core IR (tables, columns, relations, key/timestamp
 // synthesis) before index finalization, so any index a reader declares is named
@@ -313,9 +317,9 @@ func Run(p *protogen.Plugin, opts Options, registry map[string]schema.Target, ba
 }
 
 // adaptedReaders wraps the adapter in a slice, or returns none when there was no
-// backend to adapt. A nil backend is legitimate — it means "build from AIP and
-// protokit.v1 alone" — and putting the resulting nil reader in the slice would
-// turn that into a panic on the first Key() call.
+// backend to adapt. A nil backend is legitimate — it means "build from AIP
+// alone" — and putting the resulting nil reader in the slice would turn that into
+// a panic on the first Key() call.
 func adaptedReaders(r FacetReader) []FacetReader {
 	if r == nil {
 		return nil

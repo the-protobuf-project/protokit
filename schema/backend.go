@@ -12,8 +12,8 @@ package schema
 // Backend conflated three separable concerns, and the middle one was the problem:
 //
 //   - reading a generator's annotations                  → FacetReader
-//   - deciding *neutral* names (database, schema, table) → protokit.v1, which
-//     protokit now reads itself, so two generators over one proto agree
+//   - deciding *neutral* names (database, schema, table) → a StructureReader over
+//     the neutral vocabulary, shared by every generator so two agree over one proto
 //   - a naming policy resolved from plugin config        → LayoutResolver
 //
 // Backend keeps working: [AdaptBackend] presents one as a FacetReader plus a
@@ -125,7 +125,7 @@ type Backend interface {
 // own code.
 //
 // A nil Backend yields (nil, nil): a build with no generator vocabulary at all,
-// which is a valid pure-AIP + protokit.v1 build.
+// which is a valid pure-AIP build.
 func AdaptBackend(b Backend) (FacetReader, LayoutResolver) {
 	if b == nil {
 		return nil, nil

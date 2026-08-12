@@ -4,7 +4,7 @@ package schema
 //
 // The IR itself is neutral: it carries what every generator agrees on — the
 // databases, schemas, tables, columns, relations, enums, and indexes derived from
-// AIP plus protokit.v1. Anything one generator knows and another does not (a SQL
+// AIP plus the neutral vocabulary. Anything one generator knows and another does not (a SQL
 // column type, a Solidity access model, a query surface) is a *facet*: a value a
 // generator's own reader attaches to a node, stored in a side-table keyed by the
 // node's fully-qualified proto name.
@@ -32,10 +32,10 @@ import (
 //	field:   "bookstore.v1.Author.display_name"
 //
 // It is always derived from the descriptor, never from schema.Table.Name or
-// schema.Column.Name. Those are *outputs* — a table rename (an explicit
-// protokit.v1.table.table, a de-stuttering pass, a global-namespace qualification)
-// would otherwise orphan every facet attached to it. A NodeID names the proto the
-// node came from, so it survives anything the build does to the IR.
+// schema.Column.Name. Those are *outputs* — a table rename (an explicit table-name
+// annotation, a de-stuttering pass, a global-namespace qualification) would
+// otherwise orphan every facet attached to it. A NodeID names the proto the node
+// came from, so it survives anything the build does to the IR.
 //
 // It is a plain string, so it serializes: unlike the protoreflect descriptors on
 // Table.Source / Column.Source, a NodeID can cross a process boundary.
@@ -100,23 +100,35 @@ type FacetReader interface {
 
 // StructureReader is optionally implemented by a FacetReader that must supply
 // *structure* — values protokit acts on while building, not values a target reads
-// afterward. Two situations need it, and only two:
+// afterward.
 //
-//  1. A deprecated vocabulary. A generator whose options predate protokit.v1 maps
-//     them onto their protokit.v1 equivalents here, so existing protos keep
-//     generating while their authors migrate. protokit compares the two and emits
-//     a "lint" diagnostic when a node sets both.
+// It is how *all* structure reaches protokit, including the neutral naming
+// vocabulary two plugins agree on: protokit imports no annotation module of its
+// own, so there is no read it performs first and no vocabulary it privileges. The
+// agreement comes from the plugins sharing a reader implementation, not from
+// protokit owning a proto. See docs/ownership.md.
 //
-//  2. Referential actions. ON DELETE / ON UPDATE are not part of protokit.v1, but
+// Three kinds of value arrive here:
+//
+//  1. The neutral vocabulary itself — the names and shapes every generator must
+//     derive identically from one proto. Shipped as one reader that each plugin
+//     imports rather than reimplements.
+//
+//  2. A deprecated vocabulary. A generator whose options predate the neutral one
+//     maps them onto the same neutral structs here, so existing protos keep
+//     generating while their authors migrate. Mark it [DeprecatedStructure] and
+//     protokit emits a "lint" diagnostic naming the vocabulary and the option.
+//
+//  3. Referential actions. ON DELETE / ON UPDATE are not neutral structure, but
 //     protokit consumes them mid-build: the foreign-key column of an embedded
 //     child relation is *synthesized* and carries no descriptor of its own, so
 //     nothing can recover the action after the fact. It has to arrive from the
 //     parent's field descriptor while the embed is being materialized.
 //
-// protokit consults a StructureReader only where its own protokit.v1 read produced
-// nothing. Readers are consulted in sorted Key order and the first non-empty
-// value for a given field wins, so the outcome does not depend on registration
-// order.
+// Readers are consulted in sorted Key order and the first non-empty value for a
+// given option wins, so the outcome does not depend on registration order. Where
+// two readers set the same option, protokit keeps the first and reports the
+// second as a "lint" diagnostic naming both.
 //
 // Every method must return a usable zero value when its option is absent.
 type StructureReader interface {
@@ -126,28 +138,33 @@ type StructureReader interface {
 }
 
 // DeprecatedStructure marks a StructureReader whose structural options are
-// superseded by protokit.v1 — the compatibility path a generator ships so protos
-// written against its old vocabulary keep generating while their authors migrate.
+// superseded by a newer vocabulary — the compatibility path a generator ships so
+// protos written against its old options keep generating while their authors
+// migrate.
 //
-// protokit needs the marker because it cannot tell the two kinds of
-// StructureReader apart on its own. One supplies structure protokit.v1 does not
-// express (referential actions) and is permanent; the other supplies structure
-// protokit.v1 now owns and is temporary. Only the second should nag.
+// protokit needs the marker because it cannot tell the kinds of StructureReader
+// apart on its own. One supplies structure no other vocabulary expresses
+// (referential actions) and is permanent; another supplies structure a newer
+// vocabulary now owns and is temporary. Only the second should nag.
 //
-// Whenever a marked reader supplies a value, protokit records a "lint"
-// diagnostic naming the protokit.v1 option that replaces it. The diagnostics are
-// aggregated — one per (vocabulary, option) pair per run, with a count and an
-// example node — because a deprecation that emits a line per field is a
-// deprecation people silence rather than act on.
+// Whenever a marked reader supplies a value, protokit records a "lint" diagnostic
+// naming the vocabulary and the option it set. It does not name the replacement:
+// protokit owns no annotation module and so knows of none. The reader supplies
+// that half through StructureDeprecation. The diagnostics are aggregated — one per
+// (vocabulary, option) pair per run, with a count and an example node — because a
+// deprecation that emits a line per field is a deprecation people silence rather
+// than act on.
 type DeprecatedStructure interface {
 	StructureReader
 
 	// StructureDeprecation returns a short clause appended to each diagnostic,
-	// naming the deadline or the migration. It is rendered after an em dash:
+	// naming the replacement and any deadline. It is rendered after an em dash:
 	//
-	//	StructureDeprecation() = "orm.v1 structural options are removed in v2"
-	//	→ "… use protokit.v1.table.timestamps instead — orm.v1 structural
-	//	   options are removed in v2"
+	//	StructureDeprecation() = "use the matching (entity.v1.*) option; " +
+	//	                         "orm.v1 structural options are removed in v2"
+	//	→ "orm.v1-compat sets timestamps on bookstore.v1.Book; that structural
+	//	   option is deprecated — use the matching (entity.v1.*) option; orm.v1
+	//	   structural options are removed in v2"
 	//
 	// Return "" for no clause.
 	StructureDeprecation() string
@@ -190,8 +207,8 @@ type LayoutResolver interface {
 	// An empty database or schema means "no opinion; use protokit's default".
 	// stripVersion asks protokit to flatten a trailing API version out of the
 	// schema name it derives ("bookstore_v1" → "bookstore"); it applies to
-	// config-derived and resource-type-derived names, never to an explicit
-	// protokit.v1.datasource.schema annotation.
+	// config-derived and resource-type-derived names, never to a schema a
+	// StructureReader named outright from an annotation.
 	//
 	// ok reports whether this resolver has an opinion at all — not whether a
 	// specific rule matched. A resolver backed by a loaded config returns true

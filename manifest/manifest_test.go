@@ -13,7 +13,7 @@ annotations:
 runtime:
   go: ">=1.26"
 facets:
-  reads: [protokit.v1]
+  reads: [entity.v1]
   optional_reads: [store.v1]
 outputs: ["**/*.go", "**/*.sql"]
 `
@@ -29,8 +29,8 @@ func TestParse(t *testing.T) {
 	if got := m.Annotations["buf.build/the-protobuf-project/protokit"]; got != ">=1.2.0" {
 		t.Errorf("annotation constraint = %q, want %q", got, ">=1.2.0")
 	}
-	if len(m.Facets.Reads) != 1 || m.Facets.Reads[0] != "protokit.v1" {
-		t.Errorf("Facets.Reads = %v, want [protokit.v1]", m.Facets.Reads)
+	if len(m.Facets.Reads) != 1 || m.Facets.Reads[0] != "entity.v1" {
+		t.Errorf("Facets.Reads = %v, want [entity.v1]", m.Facets.Reads)
 	}
 	if len(m.Outputs) != 2 {
 		t.Errorf("Outputs = %v, want 2 entries", m.Outputs)
@@ -82,7 +82,7 @@ func TestValidate(t *testing.T) {
 			name: "facet both required and optional",
 			m: Manifest{
 				Provides: "store",
-				Facets:   Facets{Reads: []string{"protokit.v1"}, OptionalReads: []string{"protokit.v1"}},
+				Facets:   Facets{Reads: []string{"entity.v1"}, OptionalReads: []string{"entity.v1"}},
 			},
 			want: "either required or it is not",
 		},

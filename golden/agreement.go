@@ -7,8 +7,16 @@ package golden
 // resolved the database, schema, table, and column names from its own annotation
 // package and its own config — so pointing a second generator at one set of protos
 // produced two artifacts that disagreed about what things were called, and nothing
-// caught it. Now protokit reads protokit.v1 itself and each generator contributes
-// only facets, which by construction cannot move a name.
+// caught it. Now the neutral names come from one *shared reader implementation*
+// that every plugin imports, and each generator contributes only facets on top,
+// which by construction cannot move a name.
+//
+// The sharing is what carries the guarantee, and it is worth being precise about
+// why: protokit does not read the neutral vocabulary, so nothing about this is
+// enforced by the engine. Two plugins agree because they run the same reader over
+// the same annotation module — not because protokit owns it. A plugin that writes
+// its own reader for that vocabulary rather than importing the shipped one is the
+// failure mode this test is aimed at.
 //
 // "By construction" is a claim about code, and claims about code rot. IRAgreement
 // is how it stays true.

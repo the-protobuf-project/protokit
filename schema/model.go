@@ -8,7 +8,8 @@ import "google.golang.org/protobuf/reflect/protoreflect"
 
 // Table maps one proto message (carrying google.api.resource) to one DB table.
 type Table struct {
-	// Name is the snake_case plural table name; overridable via protokit.v1.table.table.
+	// Name is the snake_case plural table name; overridable via a StructureReader's
+	// TableStructure.Table.
 	Name string
 
 	// Comment is the proto message's leading comment, normalized for embedding in
@@ -104,7 +105,8 @@ type Table struct {
 
 // Column maps one proto field to one database column.
 type Column struct {
-	// Name is the column identifier (snake_case). Overridable via protokit.v1.column.column.
+	// Name is the column identifier (snake_case). Overridable via a StructureReader's
+	// ColumnStructure.Column.
 	Name string
 
 	// Comment is the proto field's leading comment, normalized for embedding.
@@ -226,7 +228,7 @@ type ForeignKey struct {
 	ReferencedProto string
 
 	// OnDelete / OnUpdate are SQL referential actions ("CASCADE", "SET NULL", …)
-	// from protokit.v1.column.on_delete / on_update. Empty means database default.
+	// from a StructureReader's ColumnStructure. Empty means database default.
 	OnDelete string
 	OnUpdate string
 
