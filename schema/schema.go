@@ -6,12 +6,14 @@
 //  1. google.api.resource   → Database, Schema, Table names
 //  2. google.api.field_behavior → NotNull, PrimaryKey on Column
 //  3. google.api.resource_reference → ForeignKey
-//  4. protokit.v1.datasource / .table / .column → generic structure AIP can't express
+//  4. a registered StructureReader → generic structure AIP can't express
 //  5. the plugin's LayoutResolver, then protokit's package-path defaults
 //
-// protokit reads 1-4 itself. Generator-specific rendering (orm.v1, web3.v1) is
-// folded in afterward by a generator-supplied Enricher and carried per node as
-// facets (see facet.go), keeping this IR and its builder generic.
+// protokit reads 1-3 itself and nothing else: every annotation vocabulary,
+// including the neutral one two plugins agree on, arrives through a reader the
+// plugin registers. Generator-specific rendering (store.v1, web3.v1) is folded in
+// afterward by a generator-supplied Enricher and carried per node as facets (see
+// facet.go), keeping this IR and its builder generic.
 package schema
 
 import (

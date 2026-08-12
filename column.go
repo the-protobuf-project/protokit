@@ -2,10 +2,10 @@ package protokit
 
 // column.go maps a single proto field to a *schema.Column and builds the IR
 // enum a field references. Type inference proper lives in the types package;
-// here we apply the generic protokit.v1.column structure (name, skip),
-// field_behavior, and the AIP enum defaulting rules. Backend rendering overrides
-// (orm.v1.column type/unique/index/default) are applied later by the orm
-// enrichment pass, not here.
+// here we apply the neutral column structure a StructureReader supplied (name,
+// skip), field_behavior, and the AIP enum defaulting rules. Generator rendering
+// overrides (a store.v1.column type/unique/index/default) are applied later by
+// that generator's enrichment pass, not here.
 
 import (
 	"strings"

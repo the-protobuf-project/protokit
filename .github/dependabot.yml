@@ -36,20 +36,15 @@ updates:
     ignore:
       # google.golang.org/protobuf is deliberately *not* auto-bumped.
       #
-      # Its version is pinned in two places that must move together: this go.mod,
-      # and the `buf.build/protocolbuffers/go:vX.Y.Z` code generator in
-      # buf.gen.yaml that produces the committed stubs under
-      # protobuf/protokitpbv1/. Bumping only one of them regenerates stubs against
-      # a runtime they were not built for — and CI's staleness gate would report
-      # it as an unrelated diff. Bump both by hand, in one commit, then run
-      # `buf generate`.
+      # protokit derives every name in the IR from protoreflect, so a runtime bump
+      # can move generated output without touching a line of this repository. The
+      # blast radius is downstream — the consumers' golden trees are what actually
+      # decide whether one is safe — and that is not a judgment an automated PR
+      # against this module can make. Bump it by hand, then regenerate the
+      # consumers.
       - dependency-name: "google.golang.org/protobuf"
 
-  # The GitHub Actions used by this repo's own workflows (ci, publish).
-  #
-  # Worth having beyond the usual reasons: the api-lint job pins
-  # setup-google-api-linter to an exact release because no moving major tag is
-  # published for it, so nothing else would ever notice a new one.
+  # The GitHub Actions used by this repo's own workflows (ci).
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:

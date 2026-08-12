@@ -37,7 +37,7 @@ import (
 //	runtime:
 //	  go: ">=1.26"
 //	facets:
-//	  reads: [protokit.v1]
+//	  reads: [entity.v1]
 //	  optional_reads: [store.v1]
 //	outputs: ["**/*.go", "**/*.sql"]
 type Manifest struct {
@@ -213,7 +213,7 @@ func checkConstraints(report func(string, ...any), field string, m map[string]st
 }
 
 // keySyntax describes the vocabulary-key grammar, quoted in error messages.
-const keySyntax = `expected lowercase letters, digits, ".", "-", or "_" (e.g. "protokit.v1")`
+const keySyntax = `expected lowercase letters, digits, ".", "-", or "_" (e.g. "entity.v1")`
 
 // keyPattern matches a vocabulary key: a facet key, a plugin name. Deliberately
 // narrow — these become map keys, file names, and diagnostic text, so anything

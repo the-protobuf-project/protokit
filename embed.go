@@ -43,7 +43,7 @@ type buildCtx struct {
 	m2m      []*m2mReq // repeated resource_reference fields awaiting join-table synthesis
 
 	// structs are the registered StructureReaders in sorted Key order, each paired
-	// with its key for diagnostics. Consulted only where protokit.v1 said nothing.
+	// with its key for diagnostics. Consulted in sorted Key order; first answer wins.
 	structs []keyedStructure
 	// layout is the plugin's naming policy; nil means "no policy, use defaults".
 	layout schema.LayoutResolver

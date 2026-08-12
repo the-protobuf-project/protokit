@@ -1,16 +1,25 @@
 package protokit
 
 // boundary_test.go enforces protokit's central architectural invariant: the
-// engine imports no plugin's annotation module.
+// engine imports no annotation module at all.
 //
-// protokit is the neutral layer. It reads AIP (google.api.*) and its own
-// protokit.v1 vocabulary, and everything past that arrives through the SPI — a
-// FacetReader the plugin implements, over an annotation module the plugin owns.
-// The moment protokit imports orm.v1, web3.v1, or entity.v1 directly, that
-// arrangement inverts: the engine gains a compile-time dependency on one of its
-// consumers, the vocabularies stop being pluggable, and golden.IRAgreement's
-// claim — that two plugins over one set of protos derive the same neutral names —
-// stops being structural and becomes a thing someone has to remember.
+// protokit is the neutral layer. It reads AIP (google.api.*), and everything past
+// that arrives through the SPI — a FacetReader the plugin implements, over an
+// annotation module the plugin owns. The moment protokit imports entity.v1,
+// store.v1, or web3.v1 directly, that arrangement inverts: the engine gains a
+// compile-time dependency on one of its consumers, the vocabularies stop being
+// pluggable, and golden.IRAgreement's claim — that two plugins over one set of
+// protos derive the same neutral names — stops being structural and becomes a
+// thing someone has to remember.
+//
+// The rule has no exemptions, and that is a recent and deliberate state. protokit
+// used to own one vocabulary of its own, protokit.v1, and this file allowlisted
+// the import of it — the test that enforces "protokit imports no annotation
+// module" carrying an exemption for the one it did import. That vocabulary was
+// persistence-shaped (datasource, table, column, id strategy) in an engine that is
+// not, so it moved to store as entity.v1 and the exemption went with it. What
+// keeps two plugins agreeing on a name is now a shared *reader* they both import,
+// not a proto protokit owns.
 //
 // The invariant is easy to state and easy to violate by accident: importing a
 // generated stub package is one line, and it compiles. So it is checked here
@@ -54,9 +63,9 @@ var apiVersion = regexp.MustCompile(`^(v1|v[0-9]+(alpha|beta)[0-9]*)$`)
 //
 // This is deliberately wider than the "*/pb/*" and "*/v1" of the rule as
 // written, because those two patterns miss the case that actually matters. A
-// plugin's stubs are generated exactly the way protokit's own are — web3's
-// annotation module compiles to web3pbv1, orm's to ormpbv1 — and neither has a
-// "pb" path segment or a trailing "/v1". Checking only the literal patterns
+// plugin's stubs are generated the ordinary way — web3's annotation module
+// compiles to web3pbv1, store's to storepbv1, entity's to entitypbv1 — and none
+// has a "pb" path segment or a trailing "/v1". Checking only the literal patterns
 // would leave the one import this test exists to prevent undetected.
 var goStubs = regexp.MustCompile(`pb(v[0-9]+((alpha|beta)[0-9]*)?)?$`)
 
@@ -68,22 +77,19 @@ var allowedPrefixes = []string{
 	"google.golang.org/genproto/googleapis/api",
 }
 
-// allowedExact is protokit's own annotation vocabulary, and the only proto-shaped
-// import outside the two prefixes above that may appear anywhere in this module.
+// There is deliberately no per-path exemption list beside the prefixes above.
 //
-// It is listed as one exact path rather than as a module-wide prefix on purpose.
-// Allowing "everything under github.com/the-protobuf-project/protokit" would let
-// a future change vendor a copy of a plugin's vocabulary into this repository and
-// still pass — which is precisely the failure this test exists to catch, just
-// with an extra directory in front of it. protokit.v1 is allowed because protokit
-// owns it; nothing else is.
-var allowedExact = map[string]bool{
-	"github.com/the-protobuf-project/protokit/protobuf/protokitpbv1": true,
-}
+// The one that used to exist covered protokit.v1, and an exemption is exactly how
+// this gate fails quietly: a vocabulary protokit owns is indistinguishable, at the
+// import site, from a vocabulary protokit merely vendored. Allowing anything under
+// "github.com/the-protobuf-project/protokit" would be worse still — it would let a
+// future change copy a plugin's vocabulary into this repository and pass, which is
+// precisely the failure this test exists to catch with an extra directory in front
+// of it.
 
 // TestNoPluginProtoImports walks every non-test Go file in the module and fails
-// on any import of a proto module that is not the protobuf runtime, the AIP
-// annotations, or protokit's own protokit.v1.
+// on any import of a proto module that is not the protobuf runtime or the AIP
+// annotations.
 //
 // Test files are exempt because a test may legitimately construct a descriptor
 // from a vocabulary it is exercising. The invariant is about what protokit's
@@ -147,12 +153,12 @@ func TestNoPluginProtoImports(t *testing.T) {
 	})
 
 	var b strings.Builder
-	b.WriteString("protokit imports a plugin proto module, which breaks the neutral layer:\n\n")
+	b.WriteString("protokit imports an annotation module, which breaks the neutral layer:\n\n")
 	for _, v := range found {
 		fmt.Fprintf(&b, "\t%s:%d\timports %s\n", v.file, v.lineNo, v.imp)
 	}
-	b.WriteString("\nprotokit reads AIP and protokit.v1 and nothing else. A generator's own\n" +
-		"vocabulary reaches the build through the SPI, never through an import:\n\n" +
+	b.WriteString("\nprotokit reads AIP and nothing else. Every annotation vocabulary reaches\n" +
+		"the build through the SPI, never through an import:\n\n" +
 		"\timplement schema.FacetReader over your annotation module, in the repo\n" +
 		"\tthat owns it, and pass it to protokit.Build via protokit.Plugin.Readers.\n\n" +
 		"If the value is structural — something protokit acts on while building rather\n" +
@@ -177,12 +183,9 @@ func protoShaped(path string) bool {
 	return slices.Contains(segs[:len(segs)-1], "pb")
 }
 
-// allowed reports whether a proto-shaped import is one of the few protokit may
+// allowed reports whether a proto-shaped import is one of the two protokit may
 // depend on.
 func allowed(path string) bool {
-	if allowedExact[path] {
-		return true
-	}
 	for _, p := range allowedPrefixes {
 		if path == p || strings.HasPrefix(path, p+"/") {
 			return true
@@ -197,12 +200,19 @@ func allowed(path string) bool {
 func TestBoundaryPatterns(t *testing.T) {
 	violations := []string{
 		"github.com/the-protobuf-project/web3/protobuf/web3pbv1",
-		"github.com/the-protobuf-project/orm/protobuf/ormpbv1",
+		"github.com/the-protobuf-project/store/plugin/pb/storepbv1",
+		"github.com/the-protobuf-project/store/entity/pb/entitypbv1",
 		"github.com/acme/entity/gen/entity/v1",
 		"github.com/acme/entity/gen/pb/entity",
 		"example.com/thing/gen/thingpb",
 		"example.com/api/v2beta1",
 		"example.com/thing/gen/entitypbv2",
+
+		// protokit's own former vocabulary, pinned as a violation rather than
+		// omitted. It sat in the allowlist until entity.v1 replaced it, and the
+		// cheapest way to undo that removal by accident is to re-add the exemption
+		// while re-adding the module. This line fails if anyone does.
+		"github.com/the-protobuf-project/protokit/protobuf/protokitpbv1",
 	}
 	for _, imp := range violations {
 		t.Run(imp, func(t *testing.T) {
@@ -221,7 +231,6 @@ func TestBoundaryPatterns(t *testing.T) {
 		"google.golang.org/protobuf/types/pluginpb",
 		"google.golang.org/protobuf/types/descriptorpb",
 		"google.golang.org/genproto/googleapis/api/annotations",
-		"github.com/the-protobuf-project/protokit/protobuf/protokitpbv1",
 	}
 	for _, imp := range permitted {
 		t.Run(imp, func(t *testing.T) {

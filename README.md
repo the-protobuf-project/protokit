@@ -16,15 +16,16 @@ add non-proto sources and multiple output languages), a **[GraphQL frontend](#be
 (introspection/SDL → IR → typed client), and shared Go-emit helpers — all reused
 across every target instead of re-implemented per plugin.
 
-It ships **no binary**, and exactly one proto module: `protokit.v1`, the neutral
-vocabulary that decides what things are *named*. Everything storage- or
-chain-specific stays with the generator that owns it. Generators import protokit.
+It ships **no binary and no proto module**. It reads AIP and nothing else; every
+annotation vocabulary — including the neutral one that decides what things are
+*named* — arrives through a reader the plugin registers. Generators import
+protokit.
 
 ```mermaid
 flowchart LR
     P[".proto files"] --> AIP
     subgraph K["protokit — generic engine"]
-        AIP["parse + read<br/>google.api.* + protokit.v1"] --> IR["build the IR<br/>tables, columns, FKs,<br/>enums, indexes, synthesis"]
+        AIP["parse + read<br/>google.api.*"] --> IR["build the IR<br/>tables, columns, FKs,<br/>enums, indexes, synthesis"]
     end
     subgraph Author["your generator, e.g. protoc-gen-orm"]
         R["FacetReader<br/>reads your annotations"]
@@ -50,30 +51,38 @@ Your generator stays focused on its target; two generators built on protokit
 (a database one and a blockchain one) share the IR and — enforced by a test —
 derive the same names from the same protos.
 
-## The neutral vocabulary: `protokit.v1`
+## The neutral vocabulary: `entity.v1`
 
-protokit ships one small proto module of its own — package `protokit.v1`, under
-[`protobuf/protokit/v1/`](protobuf/protokit/v1) — and reads it directly:
+Two generators over one set of protos must agree on what a table is called. That
+agreement comes from a vocabulary neither of them owns alone — `entity.v1` — which
+expresses exactly the structure deciding **what things are named and which of them
+exist**, and nothing storage-specific. A Solidity generator and a Postgres
+generator must agree on a table name; they have no shared opinion about
+`VARCHAR(500)`.
 
 ```proto
-option (protokit.v1.datasource) = {database: "bookstore_db" schema: "bookstore"};
+option (entity.v1.datasource) = {database: "bookstore_db" schema: "bookstore"};
 
 message Author {
   option (google.api.resource) = {type: "bookstore.v1/Author" …};
-  option (protokit.v1.table) = {id: ID_STRATEGY_ULID, timestamps: true};
+  option (entity.v1.table) = {id: ID_STRATEGY_ULID, timestamps: true};
 
-  string internal_notes = 4 [(protokit.v1.column) = {skip: true}];
+  string internal_notes = 4 [(entity.v1.column) = {skip: true}];
 }
 ```
 
-It expresses exactly the structure that decides **what things are named and which
-of them exist** — and nothing storage-specific. That line matters: a Solidity
-generator and a Postgres generator must agree on what a table is called; they have
-no shared opinion about `VARCHAR(500)`.
+**It does not live here.** It lives in store, published as
+`buf.build/the-protobuf-project/entity`, with the reader over it shipped as the
+nested module `github.com/the-protobuf-project/store/entity` — which imports
+protokit and nothing else from store, so any plugin can consume it without pulling
+a database generator along with it.
 
-It lives here rather than in any plugin because every plugin imports protokit, so
-a vocabulary the engine reads cannot live downstream of the engine. Everything
-else stays with the generator that owns it.
+That is the opposite of the obvious arrangement, and it was arrived at the hard
+way: protokit did own this vocabulary, as `protokit.v1`, until the persistence
+shape of it (`datasource`, `table`, `column`, `id_strategy`) made the neutral
+engine a persistence engine with a generic name. web3 has no datasources. What
+makes two plugins agree is that they run **the same reader**, not that protokit
+adjudicates. See [docs/ownership.md](docs/ownership.md).
 
 ## The extension points
 
@@ -119,8 +128,8 @@ protokit.RunPlugin(p, opts, protokit.Plugin{
 })
 ```
 
-protokit reads AIP and `protokit.v1` itself, collects each reader's facets, runs
-any enrichment, finalizes indexes, then hands the IR to the selected target.
+protokit reads AIP itself, collects each reader's facets, runs any enrichment,
+finalizes indexes, then hands the IR to the selected target.
 Registration is explicit at `RunPlugin` — there is no global registry and no
 `init()`, so a run sees exactly what its caller passed.
 
@@ -134,11 +143,11 @@ opts, ok := protokit.Facet[*ColumnFacet](ir, "orm.v1", col.Node)
 descriptor. Never from `Table.Name` or `Column.Name`: those are outputs, and a
 table rename must not orphan a facet lookup.
 
-Two optional interfaces exist for the narrow cases where a reader must influence
-the build rather than merely annotate it — `StructureReader` (a deprecated
-vocabulary, or the referential actions `protokit.v1` doesn't express) and
-`Enricher` (constraints the index pass reads). Each doc comment explains why it is
-unavoidable.
+Two optional interfaces exist for a reader that must influence the build rather
+than merely annotate it — `StructureReader` (the neutral vocabulary itself, a
+deprecated one being migrated off, or the referential actions no vocabulary
+expresses) and `Enricher` (constraints the index pass reads). Each doc comment
+explains why it is unavoidable.
 
 > **Migrating from `schema.Backend`?** It still works — protokit adapts it
 > internally — and `Run`/`BuildIR` keep their signatures. Both are deprecated;
@@ -154,9 +163,12 @@ golden.IRAgreement(t, caseDir, pluginA, pluginB)
 
 Builds the IR under both plugins' readers and asserts identical database, schema,
 table, and column names plus primary- and foreign-key resolution, naming the
-diverging `NodeID` on failure. Before `protokit.v1`, each generator resolved those
-names from its own annotations and its own config, so a second generator over the
-same protos silently disagreed. This is the test that keeps that from coming back.
+diverging `NodeID` on failure. Before a shared neutral vocabulary, each generator
+resolved those names from its own annotations and its own config, so a second
+generator over the same protos silently disagreed. This is the test that keeps
+that from coming back — and, since protokit no longer reads the vocabulary itself,
+it is also what catches a plugin that wrote its own `entity.v1` reader instead of
+importing the shipped one.
 
 Its companion, `golden.Determinism(t, caseDir, plugin)`, generates twice and
 byte-compares — catching the map-ranged-into-output bug that a committed golden
