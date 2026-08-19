@@ -40,6 +40,25 @@ against your `go.sum`. That check is in
 it is the one that governs the code you actually run. Neither check substitutes
 for the other.
 
+### When these assets get published
+
+`release-module.yml` attaches assets to a release **only when the ref it runs on
+is a tag.** That covers the `v*` tag push that normally drives a release, and a
+`workflow_call` invocation whose caller was itself triggered from a tag.
+
+Invoked from any other ref, the workflow is generation-only: it builds and signs
+the SBOM, keeps both as workflow artifacts of that run, and attaches nothing to
+any release. It also refuses to start if its optional `version` input is set to
+anything other than the ref it is running on — the input asserts what the caller
+believes it is releasing, it does not aim the publication, so a branch build has
+no way to overwrite the assets of an already-published tag.
+
+What that buys you as a verifier: every asset on a release was produced by a run
+whose own ref was the tag it hangs off. There is no supported path by which the
+`v1.3.0` assets were built from a branch. Step 2 lets you confirm this yourself
+rather than take it on trust — `--source-tag` fails the check if the provenance
+records any other ref.
+
 ---
 
 ## Prerequisites
@@ -253,8 +272,9 @@ openssl x509 -in "protokit-${VERSION}.cdx.json.pem" -noout -text \
 
 `release-module.yml` is also reusable. When a sibling repository invokes it,
 Fulcio records the identity of the **called** workflow, so the `@<ref>` suffix
-is the ref of *this* repository's workflow file rather than the caller's tag.
-Match on a pattern instead:
+is the ref of *this* repository's workflow file — commonly a branch, whichever
+ref the caller pinned — rather than the caller's tag. Match on a pattern
+instead:
 
 ```bash
 cosign verify-blob \
@@ -267,6 +287,11 @@ cosign verify-blob \
 
 Keep the anchors (`^`/`$`) and the escaped dots. An unanchored pattern will
 match hostile identities that merely *contain* the expected string.
+
+The `refs/heads/` alternative widens only *which ref of protokit's workflow file*
+the caller was allowed to pin — not what that workflow was allowed to publish.
+The caller's own ref still had to be a tag for these assets to reach a release,
+and Step 2's `--source-tag` pins that tag independently of this identity check.
 
 ---
 

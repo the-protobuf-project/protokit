@@ -25,14 +25,27 @@ name: Release module
 on:
   push:
     tags: ["v*"]
+  # Reusable, but publication is gated on the ref.
+  #
+  # `github.ref` inside a called workflow is the caller's triggering ref. When
+  # that ref is a tag, this workflow publishes: assets are attached to that
+  # tag's release and provenance is uploaded alongside them. From any other ref
+  # it is generation-only — the SBOM and its signature are produced and kept as
+  # workflow artifacts, and nothing touches a release. The `if:` guards on the
+  # `release` and `provenance` jobs are what enforce that.
+  #
+  # Without the gate, `contents: write` plus a caller-supplied version is a path
+  # for any branch in any calling repository to overwrite the assets of an
+  # already-published tag.
   workflow_call:
     inputs:
       version:
         description: >-
-          Version stamped into the SBOM filename and used as the upload target,
-          e.g. v1.3.0. Defaults to the tag that triggered the run, which is what
-          a `push` tag build wants. Callers invoking this from a non-tag ref
-          must supply it explicitly.
+          Optional assertion of the ref being released, e.g. v1.3.0. It must be
+          either empty or exactly equal to `github.ref_name`; anything else
+          fails the run in `verify`. It is a cross-check on the caller's intent,
+          not a target selector — it cannot point this workflow at a tag other
+          than the one it is running on.
         type: string
         required: false
         default: ""
@@ -58,6 +71,21 @@ jobs:
     permissions:
       contents: read
     steps:
+      # Fails the whole run before anything is built, so a caller that believes
+      # it is releasing v1.3.0 can never quietly produce artifacts for some
+      # other ref. On a `push` tag build `inputs.version` is unset and this is a
+      # no-op.
+      - name: Check version input against ref
+        env:
+          VERSION_INPUT: ${{ inputs.version }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [ -n "${VERSION_INPUT}" ] && [ "${VERSION_INPUT}" != "${REF_NAME}" ]; then
+            echo "::error::version input '${VERSION_INPUT}' does not match ref '${REF_NAME}'; leave it empty or set it to the ref this run is on"
+            exit 1
+          fi
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
@@ -116,7 +144,11 @@ jobs:
       - name: Generate CycloneDX SBOM
         id: generate
         env:
-          VERSION: ${{ inputs.version || github.ref_name }}
+          # The ref this run is on, never `inputs.version`. The input is an
+          # assertion checked in `verify`, so deriving the filename and the
+          # upload target from the ref directly keeps the publication path
+          # unreachable from caller-supplied data even if that check regresses.
+          VERSION: ${{ github.ref_name }}
         run: |
           set -euo pipefail
           sbom="${GITHUB_REPOSITORY##*/}-${VERSION}.cdx.json"
@@ -230,6 +262,10 @@ jobs:
   release:
     name: Attach to release
     needs: [sbom, sign]
+    # The publication gate. A `push` tag build always satisfies it; a
+    # workflow_call from a branch does not, and stops here with the SBOM and
+    # signature still available as workflow artifacts.
+    if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     permissions:
       # Writes release assets and nothing else.
@@ -268,6 +304,11 @@ jobs:
   provenance:
     name: SLSA provenance
     needs: [sbom, release]
+    # Skipped implicitly whenever `release` is (a skipped dependency skips its
+    # dependents), but stated outright so the rule survives any future change to
+    # this job's `needs`, and so the two halves of the publication path carry the
+    # same visible gate.
+    if: startsWith(github.ref, 'refs/tags/')
     permissions:
       id-token: write # Fulcio: sign the provenance, and detect this workflow's own ref
       contents: write # attach the .intoto.jsonl to the release
@@ -294,9 +335,10 @@ jobs:
     with:
       base64-subjects: ${{ needs.sbom.outputs.digests }}
       upload-assets: true
-      # Set explicitly so the upload also works when this workflow is invoked
-      # through workflow_call from a non-tag ref, where github.ref is not a tag
-      # and the generator would otherwise skip the upload entirely.
+      # Redundant with the generator's own ref detection now that this job only
+      # runs on a tag ref, but stated explicitly so the upload target is the
+      # same value `release` attached its assets to rather than a second,
+      # independently derived one.
       upload-tag-name: ${{ needs.sbom.outputs.version }}
       # Matches the generator's own default for a single subject; stated
       # explicitly so docs/RELEASE.md can name the file with certainty.
