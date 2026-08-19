@@ -1,0 +1,345 @@
+name: Release module
+
+# Supply-chain artifacts for a protokit tag:
+#
+#   protokit-<version>.cdx.json               CycloneDX 1.6 SBOM
+#   protokit-<version>.cdx.json.sig           cosign detached signature
+#   protokit-<version>.cdx.json.pem           Fulcio signing certificate
+#   protokit-<version>.cdx.json.intoto.jsonl  SLSA Build L3 provenance
+#
+# All four are attached to the GitHub Release. docs/RELEASE.md is the
+# independent-verification procedure for them.
+#
+# Scope of the provenance. protokit is a pure Go library with no `package main`,
+# so the attested subject is the SBOM this workflow produces, not an executable.
+# The provenance therefore answers "was this SBOM produced by this workflow, at
+# this tag, on a GitHub-hosted runner?" — authorship and build integrity of the
+# metadata.
+#
+# It is deliberately not a claim about the module bytes a consumer compiles.
+# Those arrive over the Go module proxy, and their integrity is enforced by the
+# Go checksum database (sum.golang.org) against go.sum on the consumer side.
+# Both checks are documented in docs/RELEASE.md; neither substitutes for the
+# other.
+
+on:
+  push:
+    tags: ["v*"]
+  # Reusable, but publication is gated on the ref.
+  #
+  # `github.ref` inside a called workflow is the caller's triggering ref. When
+  # that ref is a tag, this workflow publishes: assets are attached to that
+  # tag's release and provenance is uploaded alongside them. From any other ref
+  # it is generation-only — the SBOM and its signature are produced and kept as
+  # workflow artifacts, and nothing touches a release. The `if:` guards on the
+  # `release` and `provenance` jobs are what enforce that.
+  #
+  # Without the gate, `contents: write` plus a caller-supplied version is a path
+  # for any branch in any calling repository to overwrite the assets of an
+  # already-published tag.
+  workflow_call:
+    inputs:
+      version:
+        description: >-
+          Optional assertion of the ref being released, e.g. v1.3.0. It must be
+          either empty or exactly equal to `github.ref_name`; anything else
+          fails the run in `verify`. It is a cross-check on the caller's intent,
+          not a target selector — it cannot point this workflow at a tag other
+          than the one it is running on.
+        type: string
+        required: false
+        default: ""
+
+# No workflow-level `permissions:` block. Each job below declares the minimum it
+# needs, so the read-only jobs cannot write to the repository even if a step in
+# them is compromised.
+
+concurrency:
+  # Shared with the release-notes workflow (release.yml), which triggers on the
+  # same tags. Both call the releases API for the same tag, so they are
+  # serialized rather than raced. Never cancel: a half-published release is
+  # worse than a slow one.
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # Gate everything on a green build/test, so a broken tag never gets an SBOM,
+  # a signature and provenance that make it look blessed.
+  verify:
+    name: Verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      # Fails the whole run before anything is built, so a caller that believes
+      # it is releasing v1.3.0 can never quietly produce artifacts for some
+      # other ref. On a `push` tag build `inputs.version` is unset and this is a
+      # no-op.
+      - name: Check version input against ref
+        env:
+          VERSION_INPUT: ${{ inputs.version }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [ -n "${VERSION_INPUT}" ] && [ "${VERSION_INPUT}" != "${REF_NAME}" ]; then
+            echo "::error::version input '${VERSION_INPUT}' does not match ref '${REF_NAME}'; leave it empty or set it to the ref this run is on"
+            exit 1
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          # Pins the toolchain to the `go` directive in go.mod (currently
+          # 1.26.4) rather than "whatever is newest", so the release is verified
+          # on the same compiler the module declares.
+          go-version-file: go.mod
+          check-latest: false
+          cache: true
+      - name: Build
+        run: go build ./...
+      - name: Test
+        run: go test ./...
+
+  sbom:
+    name: SBOM
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.generate.outputs.version }}
+      sbom-file: ${{ steps.generate.outputs.sbom-file }}
+      # sha256 digest of the SBOM, sha256sum-formatted and base64-encoded, in
+      # the shape the SLSA generator expects as `base64-subjects`.
+      digests: ${{ steps.generate.outputs.digests }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # cyclonedx-gomod resolves the main module's version from the VCS tag
+          # via `git describe`. A shallow clone has no tags, which silently
+          # degrades the SBOM's own version to a pseudo-version, so fetch the
+          # full history here.
+          fetch-depth: 0
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          check-latest: false
+          # Deliberately uncached, unlike the verify job.
+          #
+          # This job produces the artifact that provenance is generated over, so
+          # its inputs must come from the module proxy — checksum-verified
+          # against sum.golang.org on every fetch — and not from a cache another
+          # job in this workflow populated. Restoring a mutable, workflow-scoped
+          # cache into the attested build is exactly the shared-state path that
+          # SLSA L3's isolation requirement exists to close. The cost is one
+          # cold module download.
+          cache: false
+
+      - name: Install cyclonedx-gomod
+        # Pinned by version and fetched through the module proxy, so this
+        # install is itself checksum-verified against sum.golang.org.
+        run: go install github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@v1.10.0
+
+      - name: Generate CycloneDX SBOM
+        id: generate
+        env:
+          # The ref this run is on, never `inputs.version`. The input is an
+          # assertion checked in `verify`, so deriving the filename and the
+          # upload target from the ref directly keeps the publication path
+          # unreachable from caller-supplied data even if that check regresses.
+          VERSION: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          sbom="${GITHUB_REPOSITORY##*/}-${VERSION}.cdx.json"
+
+          # `mod` — an SBOM of the module and its dependency graph.
+          #
+          # Not `app` or `bin`: both describe the dependencies that survive into
+          # a compiled binary, and so require a build target. protokit has no
+          # main package, so there is nothing for them to analyze. `mod` is the
+          # mode that describes a library.
+          #
+          #   -type library     main component is a library, not an application
+          #   -output-version   CycloneDX spec 1.6
+          #   -licenses         attach detected licenses as evidence
+          #   -std              include the Go standard library as a component
+          cyclonedx-gomod mod \
+            -json \
+            -type library \
+            -output-version 1.6 \
+            -licenses \
+            -std \
+            -output "${sbom}" \
+            .
+
+          {
+            echo "version=${VERSION}"
+            echo "sbom-file=${sbom}"
+            echo "digests=$(sha256sum "${sbom}" | base64 -w0)"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Show SBOM summary
+        env:
+          # Passed as an environment variable rather than interpolated into the
+          # script body: the value derives from a tag name, and `${{ }}` inside
+          # `run:` is textual substitution that a crafted tag could break out of.
+          SBOM: ${{ steps.generate.outputs.sbom-file }}
+        run: |
+          set -euo pipefail
+          sbom="${SBOM}"
+          echo "### SBOM \`${sbom}\`" >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo ""
+            echo "| field | value |"
+            echo "| --- | --- |"
+            echo "| spec | $(jq -r .specVersion "${sbom}") |"
+            echo "| component | $(jq -r .metadata.component.name "${sbom}") |"
+            echo "| version | $(jq -r .metadata.component.version "${sbom}") |"
+            echo "| components | $(jq -r '.components | length' "${sbom}") |"
+            echo "| dependencies | $(jq -r '.dependencies | length' "${sbom}") |"
+            echo "| sha256 | \`$(sha256sum "${sbom}" | cut -d' ' -f1)\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sbom
+          path: ${{ steps.generate.outputs.sbom-file }}
+          if-no-files-found: error
+          retention-days: 7
+
+  sign:
+    name: Sign SBOM
+    needs: sbom
+    runs-on: ubuntu-latest
+    permissions:
+      # The OIDC token cosign exchanges with Fulcio for a short-lived signing
+      # certificate. Scoped to this job alone.
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: sbom
+
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          # Deliberately the v2 line, not v3.
+          #
+          # cosign v3 removed --output-signature/--output-certificate from
+          # sign-blob: it emits a single combined Sigstore bundle (--bundle)
+          # instead. Detached .sig + .pem are what a verifier can check with
+          # nothing but `cosign verify-blob`, so this stays on v2 until the
+          # docs and consumers move to the bundle format together.
+          #
+          # v2.6.5 is current, not stale — it was published the same day as
+          # v3.1.3; the two lines are maintained in parallel.
+          cosign-release: v2.6.5
+
+      - name: Keyless sign-blob
+        env:
+          SBOM: ${{ needs.sbom.outputs.sbom-file }}
+        run: |
+          set -euo pipefail
+          # Keyless: cosign trades this job's OIDC identity for an ephemeral
+          # Fulcio certificate, signs, and records the entry in the Rekor
+          # transparency log. No private key exists to leak or rotate.
+          cosign sign-blob \
+            --yes \
+            --output-signature "${SBOM}.sig" \
+            --output-certificate "${SBOM}.pem" \
+            "${SBOM}"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: signature
+          path: |
+            ${{ needs.sbom.outputs.sbom-file }}.sig
+            ${{ needs.sbom.outputs.sbom-file }}.pem
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Attach to release
+    needs: [sbom, sign]
+    # The publication gate. A `push` tag build always satisfies it; a
+    # workflow_call from a branch does not, and stops here with the SBOM and
+    # signature still available as workflow artifacts.
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      # Writes release assets and nothing else.
+      contents: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Attach SBOM, signature and certificate
+        uses: softprops/action-gh-release@fe965f7af51af5f2602596916f38a38df2e33de0 # v3.0.2
+        with:
+          # No `body` / `generate_release_notes` here on purpose: release.yml
+          # owns the notes for this tag. This job only adds assets, and passing
+          # a body would overwrite what that workflow wrote.
+          tag_name: ${{ needs.sbom.outputs.version }}
+          files: |
+            dist/*.cdx.json
+            dist/*.cdx.json.sig
+            dist/*.cdx.json.pem
+          fail_on_unmatched_files: true
+
+  # SLSA Build Level 3 provenance over the SBOM.
+  #
+  # Runs as a separate job, in a separate reusable workflow, on a runner this
+  # repository's own jobs never touch. That isolation is the point: the
+  # provenance is generated by a builder the build cannot reach or influence,
+  # which is what distinguishes L3 from a self-attestation. The only thing that
+  # crosses the boundary is the subject digest computed in `sbom`.
+  #
+  # Ordered after `release` rather than in parallel with it: the generator
+  # attaches its output with softprops/action-gh-release, the same action the
+  # release job uses, and two concurrent create-or-update calls against one tag
+  # can race.
+  provenance:
+    name: SLSA provenance
+    needs: [sbom, release]
+    # Skipped implicitly whenever `release` is (a skipped dependency skips its
+    # dependents), but stated outright so the rule survives any future change to
+    # this job's `needs`, and so the two halves of the publication path carry the
+    # same visible gate.
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      id-token: write # Fulcio: sign the provenance, and detect this workflow's own ref
+      contents: write # attach the .intoto.jsonl to the release
+      actions: read # read this run's metadata to build the attestation
+    # Referenced BY TAG, not by commit SHA. This is the one deliberate exception
+    # to this file's pin-everything-to-a-SHA rule, and it is required rather
+    # than merely convenient.
+    #
+    # The generator detects its own repository and ref at runtime and embeds
+    # them in the provenance as the builder ID. slsa-verifier then checks that
+    # builder ID against its set of trusted builders, each of which is written
+    # as `...generator_generic_slsa3.yml@refs/tags/vX.Y.Z`. Pinned to a SHA, the
+    # emitted builder ID becomes `...@<sha>`, which no verifier will accept:
+    # the provenance would generate successfully and then fail every
+    # verification downstream — the worst possible failure mode, because it
+    # looks like it worked.
+    #
+    # The generator enforces the same rule from its side: it re-checks itself
+    # out at the detected ref, and that ref must be a tag.
+    #
+    # Consequence to accept knowingly: this line cannot be dependabot-pinned,
+    # so the tag must be bumped by hand and trust rests on the tag not moving.
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
+    with:
+      base64-subjects: ${{ needs.sbom.outputs.digests }}
+      upload-assets: true
+      # Redundant with the generator's own ref detection now that this job only
+      # runs on a tag ref, but stated explicitly so the upload target is the
+      # same value `release` attached its assets to rather than a second,
+      # independently derived one.
+      upload-tag-name: ${{ needs.sbom.outputs.version }}
+      # Matches the generator's own default for a single subject; stated
+      # explicitly so docs/RELEASE.md can name the file with certainty.
+      provenance-name: ${{ needs.sbom.outputs.sbom-file }}.intoto.jsonl
