@@ -30,14 +30,16 @@ func SetTool(name string) {
 // the same tool the file-header banner does, keeping protokit generator-neutral.
 func Tool() string { return tool }
 
-// Info is the metadata rendered into one file's banner. Source and Notes may be
-// empty; the umbrella datasource file, for instance, aggregates schemas and has
-// no single source proto.
+// Info is the metadata rendered into one file's banner. Every field is
+// optional: the umbrella datasource file, for instance, aggregates schemas and
+// has no single source proto, and a generator that emits no SQL at all — an MCP
+// or GraphQL plugin — leaves Database and Schema empty and gets no
+// database/schema block.
 type Info struct {
 	PluginVersion string   // generator plugin version (build ldflags)
 	ProtocVersion string   // protoc compiler version (CodeGeneratorRequest)
 	Source        string   // originating .proto path(s); omitted when empty
-	Database      string   // datasource database name
+	Database      string   // datasource database name; omitted when empty
 	SchemaLabel   string   // "schema" or "schemas"; defaults to "schema"
 	Schema        string   // schema name, or schemas list for the umbrella file
 	Notes         []string // extra context lines, shown before the project line
@@ -57,11 +59,16 @@ func Render(prefix string, in Info) string {
 		lines = append(lines, "source: "+in.Source)
 	}
 
-	label := in.SchemaLabel
-	if label == "" {
-		label = "schema"
+	// A generator with no datasource behind it — MCP, GraphQL — leaves both
+	// empty; emitting the labels then would put two blank metadata lines at the
+	// top of every file it produces.
+	if in.Database != "" || in.Schema != "" {
+		label := in.SchemaLabel
+		if label == "" {
+			label = "schema"
+		}
+		lines = append(lines, "", pad("database")+in.Database, pad(label)+in.Schema)
 	}
-	lines = append(lines, "", pad("database")+in.Database, pad(label)+in.Schema)
 
 	if len(in.Notes) > 0 {
 		lines = append(lines, "")
