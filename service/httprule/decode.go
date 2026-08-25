@@ -36,7 +36,7 @@ func (e *DecodeError) Error() string {
 // slash from a three-segment name. Every other escape decodes, including
 // multi-byte UTF-8, which is encoded one byte at a time.
 //
-// See PROTOCOL.md §3.2 in the gateway repository.
+// See README §1.2 in the gateway repository.
 func DecodeSegment(s string) (string, error) {
 	if !strings.ContainsRune(s, '%') {
 		return s, nil
@@ -84,7 +84,7 @@ func hexVal(b byte) (byte, bool) {
 }
 
 // Match matches raw path segments against the route and returns the decoded
-// captures. It is the reference implementation of PROTOCOL.md §3, and the
+// captures. It is the reference implementation of README §1, and the
 // behaviour every generated runtime is held to by the conformance suite.
 //
 // It returns [ErrNoMatch] when the path does not match, and a *[DecodeError]

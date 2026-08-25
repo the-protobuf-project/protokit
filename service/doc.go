@@ -18,5 +18,5 @@
 // The IR is deliberately larger than routing needs. Validation rules, resource
 // patterns, singular and plural names, and per-binding response sets exist so an
 // OpenAPI target can produce a document a human can navigate — see
-// PROTOCOL.md §11 in the gateway repository.
+// README §9 in the gateway repository.
 package service

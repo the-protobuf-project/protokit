@@ -87,6 +87,7 @@ func (b *builder) buildBinding(
 	index int,
 	raw *httpBinding,
 	input *Message,
+	output *Message,
 	source string,
 ) (*Binding, error) {
 	tmpl, err := httprule.Parse(raw.template)
@@ -106,6 +107,10 @@ func (b *builder) buildBinding(
 		Template:   tmpl,
 		Route:      route,
 		Verb:       tmpl.Verb,
+		// Set before bindResponseBody runs below, which resolves response_body
+		// against it. Assigning it afterwards left that resolution looking at a
+		// nil message.
+		responseMessage: output,
 	}
 	raw.verb = tmpl.Verb
 
@@ -138,12 +143,15 @@ func (b *builder) bindPathParams(binding *Binding, input *Message) error {
 				capture.Name(), leaf.Name, leaf.Kind,
 			)
 		}
-		// A repeated field only makes sense under a "**", which is the one
-		// capture that can span more than one segment.
-		if leaf.Repeated && capture.End != httprule.ToEnd {
+		// google/api/http.proto is explicit that a path variable must not refer
+		// to a repeated field, and a "**" is no exception: it captures one
+		// value, the matched segments joined with "/", so there is nothing to
+		// distribute across elements. Permitting it here would emit a binding
+		// no runtime can honour.
+		if leaf.Repeated {
 			return fmt.Errorf(
-				"path variable %q binds repeated field %q, which requires a %q capture",
-				capture.Name(), leaf.Name, "**",
+				"path variable %q binds repeated field %q; a path variable must bind a non-repeated field",
+				capture.Name(), leaf.Name,
 			)
 		}
 		binding.PathParams = append(binding.PathParams, &Param{

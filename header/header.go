@@ -31,8 +31,22 @@ func SetTool(name string) {
 // name, which is right when a repository is named after its generator and wrong
 // otherwise: protoc-gen-http lives in grpc-gateway-rs, so the derived link
 // would point at a repository that does not exist. Call this after SetTool.
+//
+// A line break in credit is collapsed to a space rather than rejected. Render
+// prefixes each line of the banner with "//" or "--", so an embedded newline
+// would escape the comment and emit an unparseable file; a generator that
+// passes one has made a mistake, but failing a build over a credit line is a
+// worse outcome than quietly keeping it on one line.
 func SetProject(credit string) {
-	project = credit
+	project = singleLine(credit)
+}
+
+// singleLine collapses CR, LF and CRLF to single spaces.
+func singleLine(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", " ")
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.ReplaceAll(s, "\r", " ")
+	return strings.TrimSpace(s)
 }
 
 // Tool returns the current generator binary name ("protoc-gen-orm", …). Other

@@ -1,5 +1,7 @@
 package service
 
+import "strconv"
+
 // RuleKind identifies one validation check.
 type RuleKind uint8
 
@@ -75,10 +77,13 @@ type Constraint struct {
 	// repeated field's element count.
 	MinLen, MaxLen *uint64
 
-	// Gt, Gte, Lt, Lte bound a numeric value. They are kept as float64 so one
-	// field covers every numeric width; a generator narrows to the field's own
-	// type when emitting.
-	Gt, Gte, Lt, Lte *float64
+	// Gt, Gte, Lt, Lte bound a numeric value.
+	//
+	// A Bound rather than a float64: protovalidate permits any int64 or uint64
+	// limit, and float64 has 53 bits of mantissa, so a bound at or above 2^53
+	// would arrive at the target already rounded. The rounding is silent and
+	// the emitted check would be wrong by one.
+	Gt, Gte, Lt, Lte *Bound
 
 	// Regex is an RE2 pattern the value must match.
 	Regex string
@@ -86,4 +91,42 @@ type Constraint struct {
 	// In and NotIn enumerate allowed and forbidden values, rendered as strings
 	// so enums and scalars share one representation.
 	In, NotIn []string
+}
+
+// Bound is one numeric limit, kept in the width protovalidate declared it in.
+//
+// Exactly one field is set. A target reads the one matching the field's Kind,
+// so an int64 limit is emitted as the integer the author wrote rather than as
+// whatever survived a trip through float64.
+type Bound struct {
+	// Int is set for a signed integer limit.
+	Int *int64
+	// Uint is set for an unsigned integer limit.
+	Uint *uint64
+	// Float is set for a floating-point limit.
+	Float *float64
+}
+
+// IntBound returns a signed integer bound.
+func IntBound(v int64) *Bound { return &Bound{Int: &v} }
+
+// UintBound returns an unsigned integer bound.
+func UintBound(v uint64) *Bound { return &Bound{Uint: &v} }
+
+// FloatBound returns a floating-point bound.
+func FloatBound(v float64) *Bound { return &Bound{Float: &v} }
+
+// String renders the bound as the literal a target emits.
+func (b *Bound) String() string {
+	switch {
+	case b == nil:
+		return ""
+	case b.Int != nil:
+		return strconv.FormatInt(*b.Int, 10)
+	case b.Uint != nil:
+		return strconv.FormatUint(*b.Uint, 10)
+	case b.Float != nil:
+		return strconv.FormatFloat(*b.Float, 'g', -1, 64)
+	}
+	return ""
 }

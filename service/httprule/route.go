@@ -116,7 +116,7 @@ func (r *Route) fixed() int {
 // segs are the raw, still-percent-encoded segments, split on "/" — the encoding
 // is preserved because decoding before matching would let a "%2F" invent a
 // segment boundary. Callers decode each returned value afterwards, which is
-// what PROTOCOL.md §3.2 requires.
+// what README §1.2 requires.
 //
 // The returned values are still encoded. [Route.Match] is the reference
 // implementation that also decodes them, and is what the conformance suite

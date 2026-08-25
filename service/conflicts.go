@@ -43,6 +43,10 @@ func (b *builder) checkRouteConflicts(ir *IR) error {
 		})
 	}
 
-	httprule.SortBySpecificity(routes)
+	// Deliberately no sort here. `routes` is a local slice of pointers, so
+	// ordering it would reorder nothing a consumer sees — Method.Bindings keeps
+	// declaration order, which is what the IR promises. Scan order is a
+	// property of an emitted route table, and each target sorts its own with
+	// httprule.SortBySpecificity.
 	return nil
 }

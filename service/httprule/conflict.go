@@ -96,7 +96,17 @@ func SortBySpecificity(routes []*Route) {
 // example builds a concrete path matching both routes, preferring each
 // position's literal so the result reads like a real request.
 func example(a, b *Route) string {
+	// A route without a "**" matches exactly its own segment count, so the
+	// example must be that long. Taking the maximum unconditionally produced a
+	// path the shorter, fixed-length route could not match — a diagnostic
+	// naming a path that does not actually demonstrate the overlap.
 	n := max(len(a.Segments), len(b.Segments))
+	if !a.HasMulti() {
+		n = len(a.Segments)
+	}
+	if !b.HasMulti() {
+		n = min(n, len(b.Segments))
+	}
 	var segs []string
 	for i := 0; i < n; i++ {
 		switch {

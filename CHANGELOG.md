@@ -21,10 +21,14 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   resolved by registration order at request time.
 
 - **`header.SetProject`** overrides the generated-file credit line
-  independently of the tool name. `SetTool` derives the project URL by
-  stripping `protoc-gen-`, which is right when a repository is named after its
-  generator and wrong otherwise — `protoc-gen-http` lives in `grpc-gateway-rs`,
-  so the derived link pointed at a repository that does not exist.
+  independently of the tool name.
+
+  `SetTool` derives the project URL by stripping `protoc-gen-` from the binary
+  name. That is right only when a repository is named after its generator:
+  `protoc-gen-http` lives in `grpc-gateway-rs`, so the derived link pointed at
+  `the-protobuf-project/http`, which does not exist. A generator whose binary
+  and repository names differ should call `SetProject` with a value it derives
+  from its own module path, so a repository rename cannot leave a dead link.
 
 - **GitHub artifact attestation on releases.** Every release now carries a
   Sigstore bundle over the supply-chain archive, verifiable with

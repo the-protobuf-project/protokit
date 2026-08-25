@@ -134,18 +134,14 @@ func (b *builder) method(md protoreflect.MethodDescriptor, svc *Service) (*Metho
 
 	for i, raw := range raws {
 		source := fmt.Sprintf("%s binding %d", md.FullName(), i)
-		binding, err := b.buildBinding(i, raw, method.Input, source)
+		binding, err := b.buildBinding(i, raw, method.Input, method.Output, source)
 		if err != nil {
 			return nil, fmt.Errorf("binding %d (%s %s): %w", i, raw.httpMethod, raw.template, err)
-		}
-		binding.responseMessage = method.Output
-		if err := b.bindResponseBody(binding, raw); err != nil {
-			return nil, fmt.Errorf("binding %d: %w", i, err)
 		}
 		method.Bindings = append(method.Bindings, binding)
 	}
 
-	method.Pattern = classifyMethod(md, raws[0])
+	method.Pattern = classifyMethod(md, raws)
 	method.Mutating = mutating(method.Pattern, method.Bindings)
 	for _, binding := range method.Bindings {
 		binding.Responses = b.responsesFor(svc, method, binding)

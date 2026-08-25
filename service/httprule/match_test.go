@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// split mirrors PROTOCOL.md §3.2 step 2: split the raw path on "/", dropping
+// split mirrors README §1.2 step 2: split the raw path on "/", dropping
 // only the empty piece the leading slash produces.
 func split(path string) []string {
 	return strings.Split(strings.TrimPrefix(path, "/"), "/")
@@ -84,7 +84,7 @@ func TestDecodeSegment(t *testing.T) {
 		{in: "a%3Ab", want: "a:b"},
 		// Multi-byte UTF-8 is percent-encoded one byte at a time.
 		{in: "caf%C3%A9", want: "café"},
-		// %2F is left as written, in either case. PROTOCOL.md §3.2.
+		// %2F is left as written, in either case. README §1.2
 		{in: "a%2Fb", want: "a%2Fb"},
 		{in: "a%2fb", want: "a%2fb"},
 		{in: "a%2", wantErr: "truncated percent-escape"},

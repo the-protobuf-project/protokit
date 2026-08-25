@@ -131,6 +131,12 @@ func fieldFormat(fd protoreflect.FieldDescriptor) string {
 	if info == nil {
 		return ""
 	}
+	// A field_info carrying only a referenced_type has no format. Trimming the
+	// prefix off FORMAT_UNSPECIFIED would invent a format called
+	// "UNSPECIFIED", which validation would then try to enforce.
+	if info.GetFormat() == annotations.FieldInfo_FORMAT_UNSPECIFIED {
+		return ""
+	}
 	return strings.TrimPrefix(info.GetFormat().String(), "FORMAT_")
 }
 

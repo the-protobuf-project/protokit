@@ -13,7 +13,7 @@ func (b *builder) bindBody(binding *Binding, raw *httpBinding, input *Message) e
 	switch raw.body {
 	case "":
 		// No body. A request that sends one anyway is rejected at runtime; see
-		// PROTOCOL.md §4.2.
+		// README §2
 		return nil
 
 	case "*":
@@ -21,7 +21,10 @@ func (b *builder) bindBody(binding *Binding, raw *httpBinding, input *Message) e
 		return nil
 
 	default:
-		path, err := b.resolveFieldPath(input, strings.Split(raw.body, "."))
+		if err := checkTopLevel("body", raw.body); err != nil {
+			return err
+		}
+		path, err := b.resolveFieldPath(input, []string{raw.body})
 		if err != nil {
 			return fmt.Errorf("body %q: %w", raw.body, err)
 		}
@@ -52,11 +55,30 @@ func (b *builder) bindResponseBody(binding *Binding, raw *httpBinding) error {
 		return fmt.Errorf("response_body %q: the response message is not resolvable", raw.responseBody)
 	}
 
-	path, err := b.resolveFieldPath(output, strings.Split(raw.responseBody, "."))
+	if err := checkTopLevel("response_body", raw.responseBody); err != nil {
+		return err
+	}
+	path, err := b.resolveFieldPath(output, []string{raw.responseBody})
 	if err != nil {
 		return fmt.Errorf("response_body %q: %w", raw.responseBody, err)
 	}
 	binding.ResponseBody = path
+	return nil
+}
+
+// checkTopLevel rejects a dotted body or response_body value.
+//
+// google/api/http.proto describes both as "the name of the request field" —
+// singular, not a field path. Accepting a dotted one would mean binding a body
+// into a nested message the runtime would have to materialize on the way, which
+// no target emits; the generator would produce a binding nothing honours.
+func checkTopLevel(option, value string) error {
+	if strings.Contains(value, ".") {
+		return fmt.Errorf(
+			"%s %q names a nested field; %s must name a top-level field of the message, or %q",
+			option, value, option, "*",
+		)
+	}
 	return nil
 }
 

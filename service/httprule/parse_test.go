@@ -8,7 +8,7 @@ import (
 
 func TestParseShapes(t *testing.T) {
 	// The four shapes matchit rejects or mishandles, which is why this parser
-	// exists. See ARCHITECTURE.md §5.
+	// exists. See the README
 	cases := []struct {
 		tmpl   string
 		match  []Match

@@ -25,11 +25,25 @@ func musicPlugin(t *testing.T) *protogen.Plugin {
 	if err != nil {
 		t.Fatalf("resolve proto dir: %v", err)
 	}
+	// These fixtures live in the grpc-gateway-rs working tree, not in this
+	// module, so a standalone protokit checkout legitimately cannot run them.
+	// Skipping silently would let a CI job go green having tested nothing, so
+	// a job that expects them sets PROTOKIT_REQUIRE_FIXTURES=1 and gets a
+	// failure instead.
+	required := os.Getenv("PROTOKIT_REQUIRE_FIXTURES") != ""
+	absent := func(format string, args ...any) {
+		t.Helper()
+		if required {
+			t.Fatalf(format, args...)
+		}
+		t.Skipf(format, args...)
+	}
+
 	if _, err := os.Stat(protoDir); err != nil {
-		t.Skipf("example protos not present: %v", err)
+		absent("example protos not present: %v", err)
 	}
 	if _, err := exec.LookPath("buf"); err != nil {
-		t.Skip("buf is not installed")
+		absent("buf is not installed: %v", err)
 	}
 
 	out := filepath.Join(t.TempDir(), "music.binpb")

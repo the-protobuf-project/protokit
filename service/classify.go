@@ -17,11 +17,16 @@ import (
 // implies, so a method called GetBook that takes a body is not silently
 // treated as an AIP-131 Get: a mismatch means the author meant something else,
 // and guessing wrong would put it in the wrong middleware bucket.
-func classifyMethod(md protoreflect.MethodDescriptor, rule *httpBinding) MethodPattern {
+func classifyMethod(md protoreflect.MethodDescriptor, rules []*httpBinding) MethodPattern {
 	name := string(md.Name())
 
 	// Batch prefixes are checked first: BatchGetBooks starts with "Batch", and
 	// testing "Get" first would classify it as a plain Get.
+	//
+	// These return before the binding checks below, deliberately. AIP-231
+	// through AIP-235 *define* the batch methods with custom verbs —
+	// `GET /v1/{parent}/books:batchGet` — so treating a verb as disqualifying
+	// would misclassify every conformant batch method as custom.
 	switch {
 	case strings.HasPrefix(name, "BatchGet"):
 		return PatternBatchGet
@@ -39,13 +44,22 @@ func classifyMethod(md protoreflect.MethodDescriptor, rule *httpBinding) MethodP
 	if !ok {
 		return PatternCustom
 	}
-	// A custom verb means AIP-136 regardless of the name: ArchiveBook and
-	// GetBook:archive are both custom methods.
-	if rule != nil && rule.verb != "" {
-		return PatternCustom
-	}
-	if rule != nil && !methodMatchesPattern(pattern, rule.httpMethod) {
-		return PatternCustom
+	// Every binding must agree with the pattern, not just the first. A method
+	// named GetBook with an additional POST binding is not a Get, and treating
+	// it as one would mark it non-mutating and exempt it from any policy
+	// written against Selector::Mutating.
+	for _, rule := range rules {
+		if rule == nil {
+			continue
+		}
+		// A custom verb means AIP-136 regardless of the name: ArchiveBook and
+		// GetBook:archive are both custom methods.
+		if rule.verb != "" {
+			return PatternCustom
+		}
+		if !methodMatchesPattern(pattern, rule.httpMethod) {
+			return PatternCustom
+		}
 	}
 	return pattern
 }
@@ -88,17 +102,30 @@ func methodMatchesPattern(pattern MethodPattern, httpMethod string) bool {
 
 // mutating reports whether a method changes state.
 //
-// A custom method is assumed mutating *unless* its only binding is a GET, which
-// is the one case where the author has said otherwise unambiguously.
+// The pattern decides it when the pattern is a write. Otherwise the bindings
+// do: a method classified as a read but bound to a POST is mutating, because
+// the binding is what the request actually performs. Trusting the pattern
+// alone would exempt such a method from every policy written against
+// Selector::Mutating.
+//
+// A custom method with no binding is assumed mutating, which is the
+// conservative reading of an annotation that says nothing.
 func mutating(pattern MethodPattern, bindings []*Binding) bool {
-	if pattern != PatternCustom {
-		return pattern.mutating()
-	}
-	if len(bindings) == 0 {
+	// A standard write pattern is mutating whatever its bindings say.
+	// PatternCustom is excluded because MethodPattern.mutating reports true for
+	// it as a default, and for a custom method the bindings are the better
+	// evidence.
+	if pattern != PatternCustom && pattern.mutating() {
 		return true
 	}
+	if len(bindings) == 0 {
+		// Nothing to inspect. A custom method is assumed mutating, the
+		// conservative reading of an annotation that says nothing; a standard
+		// read pattern with no HTTP binding is still a read.
+		return pattern == PatternCustom
+	}
 	for _, b := range bindings {
-		if b.HTTPMethod != "GET" {
+		if b.HTTPMethod != "GET" && b.HTTPMethod != "HEAD" {
 			return true
 		}
 	}
