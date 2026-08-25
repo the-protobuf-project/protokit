@@ -25,6 +25,16 @@ func SetTool(name string) {
 	project = repo + " — https://github.com/the-protobuf-project/" + repo
 }
 
+// SetProject overrides the credit line independently of the tool name.
+//
+// SetTool derives the project URL by stripping "protoc-gen-" from the binary
+// name, which is right when a repository is named after its generator and wrong
+// otherwise: protoc-gen-http lives in grpc-gateway-rs, so the derived link
+// would point at a repository that does not exist. Call this after SetTool.
+func SetProject(credit string) {
+	project = credit
+}
+
 // Tool returns the current generator binary name ("protoc-gen-orm", …). Other
 // generated-output renderers (e.g. the docs README banner) read it so they name
 // the same tool the file-header banner does, keeping protokit generator-neutral.
