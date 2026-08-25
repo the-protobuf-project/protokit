@@ -8,8 +8,11 @@ on:
   push:
     tags: ["v*"]
 
+# Default-deny at the workflow level: a job that declares nothing gets read.
+# Only the job that publishes gets write, so a compromised step in `verify`
+# cannot touch the repository.
 permissions:
-  contents: write # required to create the GitHub Release
+  contents: read
 
 concurrency:
   group: release-${{ github.ref }}
@@ -20,9 +23,14 @@ jobs:
   verify:
     name: Verify
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      # Pinned to a commit SHA, not a tag: a tag is mutable, and an action
+      # resolved by tag runs whatever that tag points at on the day the
+      # workflow fires. release-module.yaml pins the same way.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
           cache: true
@@ -33,12 +41,15 @@ jobs:
     name: Publish release
     needs: verify
     runs-on: ubuntu-latest
+    permissions:
+      # Creates the release and nothing else.
+      contents: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0 # full history so release notes can diff against the previous tag
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:
           # Auto-generate the changelog from commits/PRs since the last tag,
           # categorized per .github/release.yml.
