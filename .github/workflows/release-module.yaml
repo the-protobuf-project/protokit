@@ -1,14 +1,33 @@
 name: Release module
 
-# Supply-chain artifacts for a protokit tag:
+# Supply-chain artifacts for a protokit tag. Two assets, not five:
 #
-#   protokit-<version>.cdx.json               CycloneDX 1.6 SBOM
-#   protokit-<version>.cdx.json.sig           cosign detached signature
-#   protokit-<version>.cdx.json.pem           Fulcio signing certificate
-#   protokit-<version>.cdx.json.intoto.jsonl  SLSA Build L3 provenance
+#   protokit-<version>-supply-chain.zip                CycloneDX 1.6 SBOM
+#                                                      cosign detached signature
+#                                                      Fulcio signing certificate
+#                                                      SLSA Build L3 provenance
+#   protokit-<version>-supply-chain.zip.sigstore.json  GitHub artifact attestation
 #
-# All four are attached to the GitHub Release. docs/RELEASE.md is the
-# independent-verification procedure for them.
+# The archive is one download and one checksum instead of four of each, and it
+# keeps the four files that only mean something together from being fetched
+# apart. docs/RELEASE.md is the independent-verification procedure.
+#
+# The attestation deliberately sits OUTSIDE the archive: it attests the archive,
+# so shipping it inside would put the key inside the lock. It is also the reason
+# the archive needs no separate checksum — `gh attestation verify` computes and
+# checks the digest itself.
+#
+# Why both a SLSA provenance and a GitHub attestation. They make the same claim
+# and are verified by different tools, and that is the point: `gh attestation
+# verify` needs only the GitHub CLI, where slsa-verifier is a separate binary a
+# consumer must obtain and trust before they can check anything. The redundancy
+# buys a verification path that is one command on a machine that already has
+# `gh`.
+#
+# The GitHub attestation is NOT the stronger of the two. It is generated inside
+# this workflow, so it is a self-attestation at SLSA Build L2; the L3 claim
+# comes from the isolated builder in the `provenance` job. Neither replaces the
+# other, and docs/RELEASE.md says so.
 #
 # Scope of the provenance. protokit is a pure Go library with no `package main`,
 # so the attested subject is the SBOM this workflow produces, not an executable.
@@ -259,24 +278,106 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  release:
-    name: Attach to release
-    needs: [sbom, sign]
+  bundle:
+    name: Bundle and attest
+    needs: [sbom, sign, provenance]
     # The publication gate. A `push` tag build always satisfies it; a
-    # workflow_call from a branch does not, and stops here with the SBOM and
-    # signature still available as workflow artifacts.
+    # workflow_call from a branch does not, and stops here with the SBOM,
+    # signature and provenance still available as workflow artifacts.
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     permissions:
-      # Writes release assets and nothing else.
-      contents: write
+      id-token: write     # Fulcio: sign the attestation
+      contents: write     # attach the two assets to the release
+      attestations: write # write to this repository's attestation store
     steps:
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - name: Collect every artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           path: dist
           merge-multiple: true
 
-      - name: Attach SBOM, signature and certificate
+      - name: Build the archive
+        id: archive
+        env:
+          VERSION: ${{ needs.sbom.outputs.version }}
+          SBOM: ${{ needs.sbom.outputs.sbom-file }}
+        run: |
+          set -euo pipefail
+          archive="${GITHUB_REPOSITORY##*/}-${VERSION}-supply-chain.zip"
+
+          # Fail loudly on a missing input. A half-populated archive that still
+          # verifies is worse than no archive: it looks complete.
+          for required in \
+            "${SBOM}" \
+            "${SBOM}.sig" \
+            "${SBOM}.pem" \
+            "${SBOM}.intoto.jsonl"
+          do
+            if [ ! -f "dist/${required}" ]; then
+              echo "::error::expected ${required} in the collected artifacts"
+              ls -R dist
+              exit 1
+            fi
+          done
+
+          # -j strips directory names, so the archive is flat and a consumer
+          # unzips into the working directory rather than a nested tree.
+          # -X omits uid, gid and platform extra fields, which say nothing about
+          # the release and vary with the runner image.
+          #
+          # This does NOT make the archive byte-reproducible, and it is not
+          # trying to: zip stores each entry's mtime regardless of -X, and the
+          # CycloneDX SBOM embeds its own generation timestamp, so two runs of
+          # one tag differ in content before they differ in packaging.
+          # Integrity comes from the attestation over this archive's digest,
+          # which is a different property than reproducibility and the one a
+          # consumer actually checks.
+          ( cd dist && zip -j -X "../${archive}" \
+              "${SBOM}" "${SBOM}.sig" "${SBOM}.pem" "${SBOM}.intoto.jsonl" )
+
+          {
+            echo "archive=${archive}"
+            echo "digest=$(sha256sum "${archive}" | cut -d' ' -f1)"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Attest the archive
+        id: attest
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          # The archive, not its contents: one subject a consumer can verify in
+          # one command, before unzipping anything.
+          subject-path: ${{ steps.archive.outputs.archive }}
+          # Print the attestation URL into the run summary, so a release can be
+          # spot-checked from the Actions tab without downloading anything.
+          show-summary: true
+
+      - name: Name the attestation after its subject
+        env:
+          BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+          ARCHIVE: ${{ steps.archive.outputs.archive }}
+          DIGEST: ${{ steps.archive.outputs.digest }}
+        run: |
+          set -euo pipefail
+          # The action writes to a generated path under RUNNER_TEMP; rename it
+          # so the release asset says what it attests.
+          cp "${BUNDLE}" "${ARCHIVE}.sigstore.json"
+
+          echo "### Supply-chain archive" >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo ""
+            echo "| field | value |"
+            echo "| --- | --- |"
+            echo "| archive | \`${ARCHIVE}\` |"
+            echo "| sha256 | \`${DIGEST}\` |"
+            echo ""
+            echo "Verify with:"
+            echo '```'
+            echo "gh attestation verify ${ARCHIVE} --repo ${GITHUB_REPOSITORY}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Attach the archive and its attestation
         uses: softprops/action-gh-release@fe965f7af51af5f2602596916f38a38df2e33de0 # v3.0.2
         with:
           # No `body` / `generate_release_notes` here on purpose: release.yml
@@ -284,9 +385,8 @@ jobs:
           # a body would overwrite what that workflow wrote.
           tag_name: ${{ needs.sbom.outputs.version }}
           files: |
-            dist/*.cdx.json
-            dist/*.cdx.json.sig
-            dist/*.cdx.json.pem
+            ${{ steps.archive.outputs.archive }}
+            ${{ steps.archive.outputs.archive }}.sigstore.json
           fail_on_unmatched_files: true
 
   # SLSA Build Level 3 provenance over the SBOM.
@@ -297,21 +397,22 @@ jobs:
   # which is what distinguishes L3 from a self-attestation. The only thing that
   # crosses the boundary is the subject digest computed in `sbom`.
   #
-  # Ordered after `release` rather than in parallel with it: the generator
-  # attaches its output with softprops/action-gh-release, the same action the
-  # release job uses, and two concurrent create-or-update calls against one tag
-  # can race.
+  # It no longer attaches anything itself. With `upload-assets: false` the
+  # signed provenance is left as a workflow artifact, which `bundle` collects
+  # along with the SBOM and its signature. That removes the race the previous
+  # layout had to order around: two jobs calling create-or-update on one tag.
   provenance:
     name: SLSA provenance
-    needs: [sbom, release]
-    # Skipped implicitly whenever `release` is (a skipped dependency skips its
-    # dependents), but stated outright so the rule survives any future change to
-    # this job's `needs`, and so the two halves of the publication path carry the
-    # same visible gate.
-    if: startsWith(github.ref, 'refs/tags/')
+    needs: sbom
+    # Generation is unconditional so a branch build still exercises the
+    # generator; only `bundle` is gated on the ref. Provenance produced off a
+    # tag stays a workflow artifact and reaches no release.
     permissions:
       id-token: write # Fulcio: sign the provenance, and detect this workflow's own ref
-      contents: write # attach the .intoto.jsonl to the release
+      # Read, not write: the generator's own upload job is gated on
+      # `upload-assets` and never runs, so nothing here touches the release.
+      # `bundle` is the single writer.
+      contents: read
       actions: read # read this run's metadata to build the attestation
     # Referenced BY TAG, not by commit SHA. This is the one deliberate exception
     # to this file's pin-everything-to-a-SHA rule, and it is required rather
@@ -334,12 +435,11 @@ jobs:
     uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
     with:
       base64-subjects: ${{ needs.sbom.outputs.digests }}
-      upload-assets: true
-      # Redundant with the generator's own ref detection now that this job only
-      # runs on a tag ref, but stated explicitly so the upload target is the
-      # same value `release` attached its assets to rather than a second,
-      # independently derived one.
-      upload-tag-name: ${{ needs.sbom.outputs.version }}
-      # Matches the generator's own default for a single subject; stated
-      # explicitly so docs/RELEASE.md can name the file with certainty.
+      # The generator does not publish. `bundle` collects its artifact and ships
+      # it inside the archive, so there is exactly one job writing to the
+      # release and exactly one asset to reason about.
+      upload-assets: false
+      # Names both the emitted file and the workflow artifact `bundle`
+      # downloads, so docs/RELEASE.md can name what is in the archive with
+      # certainty. Matches the generator's default for a single subject.
       provenance-name: ${{ needs.sbom.outputs.sbom-file }}.intoto.jsonl

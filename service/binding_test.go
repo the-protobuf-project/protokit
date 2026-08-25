@@ -152,15 +152,27 @@ func TestResourcesAreOrderedParentFirst(t *testing.T) {
 func TestSingularAndPluralAreCaptured(t *testing.T) {
 	ir := buildMusic(t)
 
-	track := ir.Resources["music.example.com/Track"]
-	if track == nil {
-		t.Fatal("no Track resource")
-	}
+	track := mustResource(t, ir, "music.example.com/Track")
+
 	// These are what the OpenAPI target builds its folder tree from; without
 	// them an import is a flat list of URLs.
 	if track.Singular != "track" || track.Plural != "tracks" {
 		t.Errorf("singular/plural = %q/%q, want track/tracks", track.Singular, track.Plural)
 	}
+}
+
+// mustResource looks a resource up, failing the test when it is absent.
+//
+// Returning it rather than nil-checking at the call site keeps the dereference
+// off a pointer the analyzer has to prove non-nil, matching findMethod.
+func mustResource(t *testing.T, ir *IR, typeName string) *Resource {
+	t.Helper()
+	resource := ir.Resources[typeName]
+	if resource == nil {
+		t.Fatalf("no resource of type %q", typeName)
+		return nil
+	}
+	return resource
 }
 
 // queryNames returns a binding's query parameter names.

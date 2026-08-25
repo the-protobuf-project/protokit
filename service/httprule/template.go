@@ -116,8 +116,9 @@ func writeSegment(b *strings.Builder, s Segment) {
 		b.WriteByte('{')
 		b.WriteString(strings.Join(s.Field, "."))
 		// A bare {name} is exactly {name=*}; render it in the short form so
-		// String reproduces what an author would have written.
-		if !(len(s.Sub) == 1 && s.Sub[0].Kind == KindSingle) {
+		// String reproduces what an author would have written. Anything else
+		// needs the explicit "=" and its sub-template.
+		if len(s.Sub) != 1 || s.Sub[0].Kind != KindSingle {
 			b.WriteByte('=')
 			for i, sub := range s.Sub {
 				if i > 0 {
