@@ -2,15 +2,24 @@
 
 **A generic toolkit for building code generators.**
 
-Its core does the hard, backend-agnostic 80% of a *schema* generator — parsing the
-descriptor set, reading the [Google AIP](https://google.aip.dev/) annotations
-(`google.api.resource` / `field_behavior` / `resource_reference`), and building a
-normalized intermediate representation (IR) of databases, tables, columns,
-relations, enums, and indexes — so a generator only has to supply the 20% that is
-actually specific to its target: how to read its own options and how to render.
+Its core does the hard, backend-agnostic 80% of a generator's frontend — parsing
+the descriptor set, reading the [Google AIP](https://google.aip.dev/)
+annotations, and building a normalized intermediate representation (IR) — so a
+generator only has to supply the 20% that is actually specific to its target: how
+to read its own options and how to render.
 
-Beyond that proto core it also provides the pieces a generator needs to grow past
-"one proto source, one output": a **source-agnostic [factory](#beyond-proto--sources-targets-and-languages)**
+There are two such frontends, both AIP-native, both target-agnostic:
+
+- **the schema IR** (`protokit`, `schema`) — `google.api.resource` /
+  `field_behavior` / `resource_reference` in; databases, tables, columns,
+  relations, enums and indexes out. It answers *what does this API store*.
+- **the service IR** (`service`) — `google.api.http` in; a route table out, with
+  path/body/query binding, AIP method classification, per-binding validation
+  rules and status sets. It answers *what HTTP surface does this API declare,
+  and what does each request mean*.
+
+Beyond those it provides the pieces a generator needs to grow past "one proto
+source, one output": a **source-agnostic [factory](#beyond-proto--sources-targets-and-languages)**
 (generic `Source`/`Target`/`Registry` over a plugin-defined model, so a plugin can
 add non-proto sources and multiple output languages), a **[GraphQL frontend](#beyond-proto--sources-targets-and-languages)**
 (introspection/SDL → IR → typed client), and shared Go-emit helpers — all reused
@@ -25,7 +34,8 @@ protokit.
 flowchart LR
     P[".proto files"] --> AIP
     subgraph K["protokit — generic engine"]
-        AIP["parse + read<br/>google.api.*"] --> IR["build the IR<br/>tables, columns, FKs,<br/>enums, indexes, synthesis"]
+        AIP["parse + read<br/>google.api.*"] --> IR["schema IR<br/>tables, columns, FKs,<br/>enums, indexes, synthesis"]
+        AIP --> SIR["service IR<br/>routes, bindings,<br/>validation, responses"]
     end
     subgraph Author["your generator, e.g. protoc-gen-orm"]
         R["FacetReader<br/>reads your annotations"]
@@ -35,6 +45,7 @@ flowchart LR
     R -.->|attaches facets| IR
     L -.->|naming policy| IR
     IR --> T
+    SIR --> T
     T --> OUT["generated files"]
 ```
 
@@ -46,7 +57,13 @@ walk the descriptors, honor AIP, group messages into a schema tree, resolve
 foreign keys, synthesize surrogate keys and audit timestamps, name and validate
 indexes, and template it all out with reproducible banners and golden tests.
 
-protokit implements that once, generically, and exposes a few small interfaces.
+A plugin that emits an HTTP surface re-implements a second one: the
+`google.api.http` template grammar, path capture against the request message,
+`body: "*"` versus a named body, the query parameters that are whatever is left
+over — and, usually, never an answer to whether two routes can match the same
+request, which is then settled by registration order at request time.
+
+protokit implements both once, generically, and exposes a few small interfaces.
 Your generator stays focused on its target; two generators built on protokit
 (a database one and a blockchain one) share the IR and — enforced by a test —
 derive the same names from the same protos.
@@ -86,8 +103,8 @@ adjudicates. See [docs/ownership.md](docs/ownership.md).
 
 ## The extension points
 
-A generator supplies **facet readers** (its own annotations), an optional
-**layout resolver** (its own config), and **targets** (rendering):
+A generator on the schema path supplies **facet readers** (its own annotations),
+an optional **layout resolver** (its own config), and **targets** (rendering):
 
 ```go
 // FacetReader carries your annotation package into the IR — as side-tables keyed
@@ -174,9 +191,9 @@ Its companion, `golden.Determinism(t, caseDir, plugin)`, generates twice and
 byte-compares — catching the map-ranged-into-output bug that a committed golden
 file cannot.
 
-## The IR
+## The schema IR
 
-The IR is a plain tree with **neutral, target-agnostic types** — no SQL, no
+The schema IR is a plain tree with **neutral, target-agnostic types** — no SQL, no
 Solidity. Each generator projects `Column.Type` (a `schema.FieldType`) onto its
 own type system.
 
@@ -190,6 +207,62 @@ erDiagram
     Table    ||--o{ Index  : has
     Column   }o--o| Enum   : "may reference"
 ```
+
+## The service IR
+
+`service` is the RPC counterpart. Descriptors in, routes out — a separate entry
+point, not part of the facet/target machinery above:
+
+```go
+ir, err := service.Build(plugin, service.Options{
+    Domain: "library.example.com",     // the AIP-193 ErrorInfo domain; protos declare none
+    Strict: "route:error,aip:warn",    // per-rule severity for recoverable problems
+})
+```
+
+Everything that requires understanding protobuf happens here, at build time. A
+generator consuming this IR emits a route table; a runtime executing that table
+parses no templates, reads no descriptors, and resolves no field paths. That
+split is what lets several runtimes in different languages agree on what a
+request means — none of them decides it.
+
+Per binding, the IR carries:
+
+- **Path, body and query.** Every template capture resolved against the input
+  message; `body: "*"`, a named body, or `google.api.HttpBody` passthrough; and
+  the query parameters that are left over, subtracted here so no runtime does it
+  reflectively. Each resolved path carries both spellings — `book.display_name`
+  for a generator emitting accessors, `book.displayName` for the wire, the
+  `FieldViolation`, and the OpenAPI document.
+- **A method pattern.** AIP-131–136 plus the batch methods (AIP-231–235),
+  classified by name and then checked against the shape that name implies, so a
+  `GetBook` carrying a body is not silently treated as a Get. `Mutating` is
+  derived from the pattern, so a middleware selector written against it stays
+  correct when a method is added.
+- **Validation rules.** `field_behavior` (`REQUIRED`, `OUTPUT_ONLY`, `IMMUTABLE`,
+  `IDENTIFIER`), resource-name patterns, `field_info` formats, and protovalidate
+  constraints — folded to constant checks where possible, flagged as needing a
+  CEL evaluator where not, rather than dropped.
+- **A status set.** The responses a binding can actually produce, not `200` and a
+  `default`: `400` where it binds anything, `401`/`403` where the service
+  declares `oauth_scopes`, `404` where it names a resource.
+- **Proto-granular field kinds.** `service.Kind` keeps distinctions
+  `schema.FieldType` folds for a database: the four 64-bit widths are one type
+  there, but protojson encodes every one of them as a string while the 32-bit
+  widths stay numbers, and a codec that gets that wrong loses precision silently.
+
+Alongside them it indexes every reachable message and enum, and every AIP-123
+resource by type — patterns, `singular`/`plural`, name field — which is what lets
+an opaque `{name=shelves/*/books/*}` capture become a navigable
+`/v1/shelves/{shelf}/books/{book}` in an OpenAPI document.
+
+**An ambiguous route table fails the build.** `service/httprule` holds the
+path-template grammar, the opcode compiler, and a `Conflicts` analysis run
+exhaustively over the whole route set — naming both bindings and an example path
+that matches each. No single method can see that set, so the check can only
+happen here; grpc-gateway settles the same overlap by registration order, at
+request time, with no report either way. A route that is merely shadowed is legal
+and is reported as a diagnostic instead.
 
 ## Beyond proto — sources, targets, and languages
 
@@ -231,13 +304,16 @@ consumer of all of this (proto → GORM/SQL/Prisma, plus GraphQL → a typed Go 
 
 | Package | Role |
 | --- | --- |
-| `protokit` (root) | The frontend: `BuildIR`, `Run`, descriptor traversal, grouping, synthesis, relation + index resolution, diagnostics, `protokit.yaml` layout config. |
-| `schema` | The IR types + the `Backend` and `Target` service-provider interfaces + the neutral `FieldType`. |
+| `protokit` (root) | The schema frontend: `BuildIR`, `Run`, descriptor traversal, grouping, synthesis, relation + index resolution, diagnostics, `protokit.yaml` layout config. |
+| `schema` | The schema IR types + the `Backend` and `Target` service-provider interfaces + the neutral `FieldType`. |
+| `service` | **The service IR.** `service.Build` turns descriptors into services, methods and HTTP bindings: AIP method classification, path/body/query binding, validation rules, per-binding status sets, resource and message indexes, and proto-granular `Kind`s. |
+| `service/httprule` | The `google.api.http` path-template grammar: `Parse` → `Compile` → `Route`, matching and segment decoding, `SortBySpecificity`, and the `Conflicts`/`Shadowed` analysis that makes an ambiguous route table a build failure. |
 | `types` | Generic type utilities: `ClassifyField` (proto → neutral type), `Relationalizable`, `ParseProvider`. |
 | `naming` | snake/Camel/Pascal, pluralization, identifier sanitizing, **plus Go-emit helpers**: `Doc` (render a description as doc comments), `GoFileName` (safe lowercase file names, build-constraint-guarded), `Unique` (numeric-suffix dedup), `GoKeyword`. |
 | `factory` | **Source-agnostic co-generation.** Generic `Source[M]` / `Target[M]` / `Registry[M]` over a plugin-defined model `M`, plus a `Ctx` and a language axis — so one binary drives many sources and targets from one config. |
 | `graphql` | **A GraphQL frontend** (parallel to the proto core). `introspect` fetches/decodes introspection JSON and parses `.graphql` SDL; `ir` normalizes it into a GraphQL IR; `dialect` abstracts engine conventions (Hasura built-in). Depends on [gqlparser](https://github.com/vektah/gqlparser). |
-| `header` | The reproducible "Code generated by …" banner. |
+| `header` | The reproducible "Code generated by …" banner. `SetTool` names the binary and derives the project link from it; `SetProject` overrides that link where a repository is not named after its generator (`protoc-gen-http` lives in `grpc-gateway-rs`), so a rename cannot leave a dead URL in every generated file. |
+| `manifest` | The file a plugin ships to declare itself: the vocabulary it provides, the modules and facets it needs, the outputs it writes. Schema and validation only — it parses and checks a declaration, and deliberately resolves nothing. |
 | `docs` | Mermaid ER diagrams + per-model README rendering (the type column comes from a generator-supplied projector). |
 | `templates` | A thin `text/template` render helper. |
 | `golden` | An in-process golden-file test harness (compiles `.proto` with [protocompile](https://github.com/bufbuild/protocompile) — no `protoc`/`buf` on PATH). |
@@ -246,6 +322,7 @@ consumer of all of this (proto → GORM/SQL/Prisma, plus GraphQL → a typed Go 
 
 - **[orm](https://github.com/the-protobuf-project/orm)** — database schemas (GORM, SQL, Prisma) from `orm.v1` annotations.
 - **[web3](https://github.com/the-protobuf-project/web3)** — on-chain artifacts (Solidity contracts, a Graph subgraph) from `web3.v1` annotations.
+- **[grpc-gateway-rs](https://github.com/the-protobuf-project/grpc-gateway-rs)** — `protoc-gen-http`: an AIP-native HTTP/JSON surface over the service IR — Rust, Go and Python runtimes plus an OpenAPI document, all from one route table.
 
 Each is a self-contained example of a protokit generator; see their READMEs for
 the full pipeline.
