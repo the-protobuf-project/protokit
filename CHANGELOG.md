@@ -7,6 +7,60 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Added
+
+- **`service` package: a service-level IR.** Descriptors in, routes out.
+  It reads `google.api.http`, `resource`, `field_behavior`, `field_info` and
+  `method_signature`, classifies methods against the AIP standard methods
+  (131–136, 231–235), resolves path/body/query binding, and derives the status
+  set each binding can produce.
+
+  `service/httprule` carries the path-template grammar, the opcode compiler and
+  the conflict analysis. **An ambiguous route table now fails the build**,
+  naming both bindings and an example path that matches each, rather than being
+  resolved by registration order at request time.
+
+- **`header.SetProject`** overrides the generated-file credit line
+  independently of the tool name.
+
+  `SetTool` derives the project URL by stripping `protoc-gen-` from the binary
+  name. That is right only when a repository is named after its generator:
+  `protoc-gen-http` lives in `grpc-gateway-rs`, so the derived link pointed at
+  `the-protobuf-project/http`, which does not exist. A generator whose binary
+  and repository names differ should call `SetProject` with a value it derives
+  from its own module path, so a repository rename cannot leave a dead link.
+
+- **GitHub artifact attestation on releases.** Every release now carries a
+  Sigstore bundle over the supply-chain archive, verifiable with
+  `gh attestation verify` and nothing else installed.
+
+  It is deliberately redundant with the SLSA provenance: same claim, different
+  verifier. `slsa-verifier` is a separate binary a consumer must obtain and
+  trust before they can check anything, and the SLSA provenance remains the
+  stronger claim — Build L3 from an isolated builder, where the GitHub
+  attestation is a self-attestation at L2. Neither replaces the other.
+
+### Changed
+
+- **Release assets are one archive, not four loose files.** A release now
+  carries `protokit-<version>-supply-chain.zip` — the SBOM, its cosign
+  signature and certificate, and the SLSA provenance — plus the attestation
+  over that archive.
+
+  The four files only mean anything together, so shipping them separately
+  invited fetching a subset. The attestation stays outside the archive because
+  it attests the archive, and it removes the need for a separate checksum:
+  `gh attestation verify` computes and checks the digest itself.
+
+  The archive is **not** byte-reproducible and does not claim to be — the SBOM
+  embeds its own generation timestamp. Integrity comes from the attested
+  digest, which is a different property.
+
+  **Migrating a verification script:** download
+  `*-supply-chain.zip` and `*.sigstore.json` instead of the four assets, run
+  `gh attestation verify` on the archive, then `unzip` before the existing
+  cosign and slsa-verifier steps. See `docs/RELEASE.md`.
+
 ### Removed
 
 - **BREAKING: `protokit.v1` is gone.** The proto module (`protobuf/protokit/v1/`)

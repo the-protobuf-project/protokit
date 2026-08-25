@@ -13,12 +13,43 @@ anything but the release assets and the public Sigstore infrastructure.
 
 ## What a release contains
 
+A release carries **two** assets:
+
 | Asset | What it is |
+| --- | --- |
+| `protokit-<version>-supply-chain.zip` | The archive below |
+| `protokit-<version>-supply-chain.zip.sigstore.json` | GitHub artifact attestation over the archive |
+
+The archive contains four files, which only mean anything together:
+
+| File | What it is |
 | --- | --- |
 | `protokit-<version>.cdx.json` | CycloneDX 1.6 SBOM — protokit's own component metadata plus the full dependency graph |
 | `protokit-<version>.cdx.json.sig` | Detached cosign signature over the SBOM bytes |
 | `protokit-<version>.cdx.json.pem` | Short-lived Fulcio X.509 certificate binding that signature to the workflow that produced it |
 | `protokit-<version>.cdx.json.intoto.jsonl` | SLSA v1.0 Build L3 provenance attesting how and where the SBOM was built |
+
+The attestation sits outside the archive because it attests the archive; inside,
+it would be the key shipped in the lock. It also means the archive needs no
+separate checksum file — `gh attestation verify` computes and checks the digest
+itself.
+
+### Two provenance claims, two verifiers
+
+The GitHub attestation and the SLSA provenance make the same claim about the
+same release and are checked by different tools. That is deliberate:
+`gh attestation verify` needs only the GitHub CLI, where `slsa-verifier` is a
+separate binary you must obtain and trust first. Step 2 is the one-command path;
+Step 3 is the stronger one.
+
+Stronger, because the GitHub attestation is generated *inside* the release
+workflow — a self-attestation, SLSA Build L2. The L3 claim comes from the
+isolated builder that produces the `.intoto.jsonl`. Neither replaces the other.
+
+The archive is **not** byte-reproducible, and does not claim to be: the SBOM
+embeds its own generation timestamp, so two runs of one tag differ in content
+before they differ in packaging. Integrity comes from the attested digest, which
+is a different property.
 
 The certificate is valid for roughly ten minutes and has long since expired by
 the time you read this. That is intentional and does not affect verification —
@@ -55,13 +86,26 @@ no way to overwrite the assets of an already-published tag.
 
 What that buys you as a verifier: every asset on a release was produced by a run
 whose own ref was the tag it hangs off. There is no supported path by which the
-`v1.3.0` assets were built from a branch. Step 2 lets you confirm this yourself
+`v1.3.0` assets were built from a branch. Step 3 lets you confirm this yourself
 rather than take it on trust — `--source-tag` fails the check if the provenance
 records any other ref.
 
 ---
 
 ## Prerequisites
+
+**GitHub CLI** — all Step 2 needs, and the only tool required for a basic check:
+
+```bash
+# macOS
+brew install gh
+
+# Linux
+# See https://github.com/cli/cli/blob/trunk/docs/install_linux.md
+```
+
+`gh attestation verify` needs `gh` 2.49 or newer. Steps 3 and 4 are optional
+hardening and need the two tools below.
 
 **cosign v2.x** — the line these releases are signed with:
 
@@ -103,27 +147,59 @@ REPO=the-protobuf-project/protokit
 With the GitHub CLI:
 
 ```bash
-gh release download "$VERSION" \
-  --repo "$REPO" \
-  --pattern '*.cdx.json' \
-  --pattern '*.cdx.json.sig' \
-  --pattern '*.cdx.json.pem' \
-  --pattern '*.cdx.json.intoto.jsonl'
+gh release download "$VERSION" --repo "$REPO" --pattern '*-supply-chain.zip*'
 ```
 
 Or without any GitHub tooling:
 
 ```bash
 BASE="https://github.com/${REPO}/releases/download/${VERSION}"
-curl -sSfLO "${BASE}/protokit-${VERSION}.cdx.json"
-curl -sSfLO "${BASE}/protokit-${VERSION}.cdx.json.sig"
-curl -sSfLO "${BASE}/protokit-${VERSION}.cdx.json.pem"
-curl -sSfLO "${BASE}/protokit-${VERSION}.cdx.json.intoto.jsonl"
+ARCHIVE="protokit-${VERSION}-supply-chain.zip"
+curl -sSfLO "${BASE}/${ARCHIVE}"
+curl -sSfLO "${BASE}/${ARCHIVE}.sigstore.json"
+```
+
+Do not unzip yet. Step 2 verifies the archive as it was published; unpacking
+first would leave you checking files you have no claim over.
+
+---
+
+## Step 2 — Verify the archive with the GitHub CLI
+
+One command, and the only step that needs no tool beyond `gh`:
+
+```bash
+gh attestation verify "protokit-${VERSION}-supply-chain.zip" --repo "$REPO"
+```
+
+Expected:
+
+```
+Loaded digest sha256:... for file://protokit-v1.3.0-supply-chain.zip
+Loaded 1 attestation from GitHub API
+✓ Verification succeeded!
+```
+
+Offline, against the bundle you downloaded rather than GitHub's API:
+
+```bash
+gh attestation verify "protokit-${VERSION}-supply-chain.zip" \
+  --bundle "protokit-${VERSION}-supply-chain.zip.sigstore.json" \
+  --repo "$REPO"
+```
+
+`gh` recomputes the archive's SHA-256 and checks it against the attested
+subject, so a modified archive fails here regardless of what it contains.
+
+Now unpack, and continue to the stronger checks:
+
+```bash
+unzip -o "protokit-${VERSION}-supply-chain.zip"
 ```
 
 ---
 
-## Step 2 — Verify the SLSA provenance
+## Step 3 — Verify the SLSA provenance
 
 This establishes that the SBOM was built by protokit's release workflow on a
 SLSA L3 builder. Copy it verbatim.
@@ -203,7 +279,7 @@ sha256sum "protokit-${VERSION}.cdx.json"
 
 ---
 
-## Step 3 — Verify the cosign signature
+## Step 4 — Verify the cosign signature
 
 Independent of the provenance, and over the same bytes.
 
@@ -291,11 +367,11 @@ match hostile identities that merely *contain* the expected string.
 The `refs/heads/` alternative widens only *which ref of protokit's workflow file*
 the caller was allowed to pin — not what that workflow was allowed to publish.
 The caller's own ref still had to be a tag for these assets to reach a release,
-and Step 2's `--source-tag` pins that tag independently of this identity check.
+and Step 3's `--source-tag` pins that tag independently of this identity check.
 
 ---
 
-## Step 4 — Confirm tampering is actually detected
+## Step 5 — Confirm tampering is actually detected
 
 A verification step you have never seen fail is a verification step you should
 not trust. Prove both checks have teeth:
