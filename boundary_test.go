@@ -39,6 +39,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/the-protobuf-project/protokit/buffers"
 	"github.com/the-protobuf-project/protokit/schema"
 )
 
@@ -272,6 +273,20 @@ func TestNeutralTypesStayPlain(t *testing.T) {
 		reflect.TypeFor[schema.Datasource](),
 		reflect.TypeFor[schema.TableStructure](),
 		reflect.TypeFor[schema.ColumnStructure](),
+
+		// The buffers IR's seam, pinned for the same reason. Its reader hands the
+		// walk a struct per node instead of the plugin's option message, and a
+		// field typed *bufferspbv1.FieldOptions here would defeat that entirely
+		// while still compiling.
+		reflect.TypeFor[buffers.FileAnnotations](),
+		reflect.TypeFor[buffers.MessageAnnotations](),
+		reflect.TypeFor[buffers.FieldAnnotations](),
+		reflect.TypeFor[buffers.EnumAnnotations](),
+		reflect.TypeFor[buffers.EnumValueAnnotations](),
+		reflect.TypeFor[buffers.OneofAnnotations](),
+		reflect.TypeFor[buffers.ServiceAnnotations](),
+		reflect.TypeFor[buffers.MethodAnnotations](),
+		reflect.TypeFor[buffers.Vocabulary](),
 	} {
 		t.Run(rt.Name(), func(t *testing.T) {
 			assertPlain(t, rt, rt.Name(), 0)
