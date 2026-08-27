@@ -9,6 +9,39 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
+- **`buffers` package: a message-graph IR for serialization schema.** Descriptors
+  in, a target-agnostic graph of files, messages, fields, oneofs, enums and
+  services out, with every field pinned to a target slot that does not move
+  between runs.
+
+  It is a third frontend rather than a use of the existing two, because both fail
+  for a serialization target in ways that are not fixable by configuration. The
+  schema IR keeps only resources and what is reachable from them — so a plain
+  `Vector3` has no representation, while a `.fbs` that omits it does not compile —
+  and it folds the four 64-bit widths into one type, which silently reinterprets
+  every negative value in a format that distinguishes `Int64` from `UInt64`. The
+  service IR materializes nothing that no method mentions, and a `.proto` of pure
+  messages with no service at all is the common input here.
+
+  Slot derivation (`ordinal.go`) and the ledger that records it (`lock.go`) are
+  the point of the package: proto field numbers are 1-based and sparse, Cap'n
+  Proto ordinals 0-based and contiguous, FlatBuffers ids consumed two at a time by
+  a union, and a mapping recomputed per run changes silently when a field is
+  deleted. A build that would assign a different slot than the ledger records
+  reports it instead of shipping it.
+
+- **`buffers.AnnotationReader`: the vocabulary seam for the new IR.** A generator's
+  own options reach the walk as plain neutral structs — descriptor in, struct out —
+  in the same shape `schema.StructureReader` uses, so protokit still imports no
+  annotation module. `buffers.Vocabulary` carries that vocabulary's option
+  spellings for diagnostic hints, so a message telling someone what to type names
+  their option rather than one protokit invented, and `buffers.NoAnnotations`
+  builds a complete schema from a `.proto` that declares no options at all.
+
+  The nine neutral structs are pinned by `TestNeutralTypesStayPlain` alongside the
+  schema IR's, so a field typed as a plugin's option message fails CI rather than
+  compiling.
+
 - **`service` package: a service-level IR.** Descriptors in, routes out.
   It reads `google.api.http`, `resource`, `field_behavior`, `field_info` and
   `method_signature`, classifies methods against the AIP standard methods

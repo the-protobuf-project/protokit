@@ -8,7 +8,7 @@ annotations, and building a normalized intermediate representation (IR) — so a
 generator only has to supply the 20% that is actually specific to its target: how
 to read its own options and how to render.
 
-There are two such frontends, both AIP-native, both target-agnostic:
+There are three such frontends, all AIP-native, all target-agnostic:
 
 - **the schema IR** (`protokit`, `schema`) — `google.api.resource` /
   `field_behavior` / `resource_reference` in; databases, tables, columns,
@@ -17,6 +17,10 @@ There are two such frontends, both AIP-native, both target-agnostic:
   path/body/query binding, AIP method classification, per-binding validation
   rules and status sets. It answers *what HTTP surface does this API declare,
   and what does each request mean*.
+- **the buffers IR** (`buffers`) — descriptors in; a message graph of files,
+  messages, fields, oneofs, enums and services out, every field pinned to a
+  target slot that does not move between runs. It answers *what does this API put
+  on the wire, and where in the record does each field sit*.
 
 Beyond those it provides the pieces a generator needs to grow past "one proto
 source, one output": a **source-agnostic [factory](#beyond-proto--sources-targets-and-languages)**
@@ -36,6 +40,7 @@ flowchart LR
     subgraph K["protokit — generic engine"]
         AIP["parse + read<br/>google.api.*"] --> IR["schema IR<br/>tables, columns, FKs,<br/>enums, indexes, synthesis"]
         AIP --> SIR["service IR<br/>routes, bindings,<br/>validation, responses"]
+        AIP --> BIR["buffers IR<br/>messages, fields, oneofs,<br/>enums, stable slots"]
     end
     subgraph Author["your generator, e.g. protoc-gen-orm"]
         R["FacetReader<br/>reads your annotations"]
@@ -46,6 +51,7 @@ flowchart LR
     L -.->|naming policy| IR
     IR --> T
     SIR --> T
+    BIR --> T
     T --> OUT["generated files"]
 ```
 
@@ -263,6 +269,50 @@ that matches each. No single method can see that set, so the check can only
 happen here; grpc-gateway settles the same overlap by registration order, at
 request time, with no report either way. A route that is merely shadowed is legal
 and is reported as a diagnostic instead.
+
+## The buffers IR
+
+`buffers` is the serialization counterpart. Descriptors in, a message graph out —
+like `service`, a separate entry point rather than part of the facet/target
+machinery above:
+
+```go
+ir, err := buffers.Build(plugin, buffers.Options{
+    Strict:      "ordinal:error,lint:warn", // per-rule severity
+    LockPath:    "buffers.lock",            // the ordinal ledger; commit it
+    Annotations: myReader{},                // your vocabulary, read through the SPI
+})
+```
+
+The other two IRs answer questions about an API's *meaning*. This one answers a
+question about its *layout*, and the difference drives everything about it:
+
+- **Every message, not just the reachable ones.** The schema IR keeps resources
+  and what hangs off them; the service IR keeps what a method mentions. A `.fbs`
+  that omits a plain `Vector3` does not compile, and a `.proto` of pure messages
+  with no service at all is the common robotics input — so the graph keeps
+  everything the compilation unit declares.
+- **Slots that do not move.** Proto field numbers are 1-based and sparse; Cap'n
+  Proto ordinals are 0-based and contiguous; FlatBuffers ids are 0-based,
+  contiguous, and consumed two at a time by a union. Every target needs a mapping,
+  and one recomputed per run changes silently when a field is deleted. The IR
+  derives it, records it in a ledger, and reports a disagreement rather than
+  shipping it — which is the whole reason the package exists.
+- **Proto-granular widths and unions.** The four 64-bit widths stay four, because
+  Cap'n Proto has a distinct `Int64` and `UInt64` and picking the wrong one
+  reinterprets every negative value. Oneofs survive as unions, which a table has
+  nowhere to put.
+- **Packed layouts are declared, never inferred.** A message that happens to
+  qualify as a fixed-size record is still emitted as an evolvable one unless the
+  vocabulary says otherwise; inferring it would turn "add a string field" into a
+  silent wire break.
+
+Like the schema IR, it imports no annotation module. A generator's own options
+reach it through a `buffers.AnnotationReader` — descriptor in, a plain neutral
+struct out — and a `buffers.Vocabulary` supplies that vocabulary's option
+spellings for diagnostic hints, so a message telling someone what to type names
+their option rather than one protokit picked. A proto carrying no options at all
+builds a complete schema under `buffers.NoAnnotations`.
 
 ## Beyond proto — sources, targets, and languages
 

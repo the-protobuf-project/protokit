@@ -42,6 +42,12 @@ strategy *is* without knowing which annotation expressed it. They are what a
 `StructureReader` maps a vocabulary *onto*, and they are the reason protokit needs
 no import of that vocabulary.
 
+The buffers IR has its own family of these — the `*Annotations` structs and
+`Vocabulary` in [`buffers/annotations.go`](../buffers/annotations.go), which a
+`buffers.AnnotationReader` maps a serialization vocabulary onto. Same rule, same
+reason, and pinned by the same test: protokit knows what a packed layout or a
+pinned ordinal *is* without knowing which annotation expressed it.
+
 This rule is enforced, not just documented: `TestNoPluginProtoImports` in
 [`boundary_test.go`](../boundary_test.go) fails the build if any non-test file
 imports a proto module outside `google.golang.org/protobuf` and
@@ -106,9 +112,11 @@ same package, so the reader's own package documentation says so in as many words
 | --- | --- | --- |
 | The SPI (`FacetReader`, `LayoutResolver`, `IR`, `Facet`) | protokit | — |
 | Neutral Go types (`Datasource`, `TableStructure`, `ColumnStructure`, `IDStrategy`) | protokit | — |
+| Neutral Go types (`buffers.*Annotations`, `buffers.Vocabulary`) | protokit | — |
 | `google.api.*` (AIP) | google | read directly |
 | `entity.v1` (neutral naming/structure vocabulary) | store, as a nested module | the `entity.Reader()` every plugin imports |
 | A generator's own vocabulary (`store.v1`, `web3.v1`, …) | the repo owning the concept | a `FacetReader` the generator passes to `Build` |
+| A serialization vocabulary (`buffers.v1`, …) | the repo owning the concept | a `buffers.AnnotationReader` the generator passes to `buffers.Build` |
 | Naming policy from a config file | the plugin | a `LayoutResolver` the plugin passes to `Build` |
 
 ## If you are about to add a proto import to protokit
