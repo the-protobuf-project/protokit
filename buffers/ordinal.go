@@ -175,6 +175,19 @@ func deriveOrdinals(numbers []int32, reserved []reservedRange) (ord map[int32]in
 		}
 	}
 
+	if truncated {
+		// The expansion stopped partway, leaving every live number plus however many
+		// reserved ones happened to fit before the cap — a mapping that depends on
+		// where the cap fell, and that would shift again the next time a live field
+		// was added. Discard it and derive from the live numbers alone, which is
+		// what the diagnostic for this case tells the author happened.
+		space = make(map[int32]bool, len(numbers))
+		for _, n := range numbers {
+			space[n] = true
+		}
+		held = nil
+	}
+
 	all := make([]int32, 0, len(space))
 	for n := range space {
 		all = append(all, n)

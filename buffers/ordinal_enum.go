@@ -25,12 +25,19 @@ func assignEnumOrdinals(values []slotInput, locked map[int32]int32, report func(
 	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].Number < sorted[j].Number })
 
 	derived := make(map[int32]int32, len(sorted))
-	for i, v := range sorted {
+	var next int32
+	for _, v := range sorted {
 		// A proto enum may declare the same number twice when allow_alias is set.
-		// The first declaration owns the ordinal; an alias shares it, which is
-		// what an alias means.
+		// The first declaration owns the ordinal; an alias shares it, which is what
+		// an alias means.
+		//
+		// The counter advances per distinct number, not per declaration. Using the
+		// loop index would count each alias as a position and leave a hole where it
+		// sat — and a Cap'n Proto enum whose enumerants are not contiguous from zero
+		// does not compile.
 		if _, seen := derived[v.Number]; !seen {
-			derived[v.Number] = int32(i)
+			derived[v.Number] = next
+			next++
 		}
 	}
 

@@ -110,3 +110,29 @@ func TestOrdinalSpaceIsBounded(t *testing.T) {
 		t.Errorf("held %d slots, want at most %d", len(held), maxOrdinalSpace)
 	}
 }
+
+func TestTruncationDerivesFromTheLiveFieldsAlone(t *testing.T) {
+	// When the reserved expansion hits the cap it is discarded rather than kept
+	// half-done. A space holding every live number plus however many reserved ones
+	// happened to fit depends on where the cap fell, and would shift again the
+	// next time a live field was added — and the diagnostic for this case tells
+	// the author the ordinals came from the live fields alone, so they must.
+	live := []int32{1, 60000}
+	ord, held, truncated := deriveOrdinals(live, []reservedRange{{Start: 2, End: 59999}})
+	if !truncated {
+		t.Fatal("expected truncation")
+	}
+	if len(held) != 0 {
+		t.Errorf("held %d reserved slots after truncation, want 0", len(held))
+	}
+
+	want, _, _ := deriveOrdinals(live, nil)
+	if len(ord) != len(want) {
+		t.Fatalf("ordinal space has %d entries, want the %d of the live-field allocation", len(ord), len(want))
+	}
+	for number, ordinal := range want {
+		if ord[number] != ordinal {
+			t.Errorf("field %d got ordinal %d, want %d", number, ord[number], ordinal)
+		}
+	}
+}

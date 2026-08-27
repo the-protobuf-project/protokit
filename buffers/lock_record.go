@@ -93,19 +93,26 @@ func (l *Lock) Equal(other *Lock) bool {
 	if other == nil {
 		return false
 	}
-	if !sameSlots(l.msgIdx, other.msgIdx) || !sameSlots(l.enumIdx, other.enumIdx) {
+
+	// Indexed from the marshalled slices rather than read off msgIdx/enumIdx/svcIdx.
+	// Those are a cache, rebuilt by reindex, and the ledger fields are exported: a
+	// Lock a caller assembled or appended to has the records but no cache, and
+	// comparing caches would call two such ledgers equal because both are empty.
+	mine, theirs := indexServices(l.Services), indexServices(other.Services)
+	if !sameSlots(indexMessages(l.Messages), indexMessages(other.Messages)) ||
+		!sameSlots(indexEnums(l.Enums), indexEnums(other.Enums)) {
 		return false
 	}
-	if len(l.svcIdx) != len(other.svcIdx) {
+	if len(mine) != len(theirs) {
 		return false
 	}
-	for node, mine := range l.svcIdx {
-		theirs, ok := other.svcIdx[node]
-		if !ok || len(mine) != len(theirs) {
+	for node, ours := range mine {
+		yours, ok := theirs[node]
+		if !ok || len(ours) != len(yours) {
 			return false
 		}
-		for name, ordinal := range mine {
-			if theirs[name] != ordinal {
+		for name, ordinal := range ours {
+			if yours[name] != ordinal {
 				return false
 			}
 		}

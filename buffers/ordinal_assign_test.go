@@ -137,3 +137,62 @@ func TestJoinNumbersCollapsesRunsIntoReservedSyntax(t *testing.T) {
 		}
 	}
 }
+
+func TestPinOntoAReservedSlotIsReported(t *testing.T) {
+	// Field 2 was deleted and reserved, so ordinal 1 is held open for it. Pinning
+	// a live field onto that ordinal aims it at a slot a deployed consumer is
+	// still reading as the old field. The placeholder is dropped either way — the
+	// point is that it is not dropped silently, which the clash check above cannot
+	// catch because only one *live* field wants the slot.
+	fields := []slotInput{
+		{Node: "m.a", Name: "a", Number: 1},
+		{Node: "m.c", Name: "c", Number: 3, Pin: 1, HasPin: true},
+	}
+	var diags []Diagnostic
+	_, slots := assignFieldOrdinals("m", fields, []reservedRange{{Start: 2, End: 2}}, nil,
+		func(d Diagnostic) { diags = append(diags, d) }, testPin)
+
+	var found bool
+	for _, d := range diags {
+		if strings.Contains(d.Message, "reserved field number 2") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("a pin onto a reserved slot went unreported; diagnostics: %v", diags)
+	}
+	for _, s := range slots {
+		if s.Ordinal == 1 {
+			t.Errorf("placeholder for reserved number %d still emitted at the pinned ordinal", s.Number)
+		}
+	}
+}
+
+func TestEnumAliasesShareAnOrdinalWithoutLeavingAGap(t *testing.T) {
+	// allow_alias lets two enumerants declare one number. They share a slot, which
+	// is what an alias means — but the counter has to advance per distinct number
+	// rather than per declaration. Counting the alias as a position leaves a hole,
+	// and a Cap'n Proto enum whose enumerants are not contiguous from zero does
+	// not compile.
+	values := []slotInput{
+		{Node: "e.UNSPECIFIED", Number: 0},
+		{Node: "e.RUNNING", Number: 1},
+		{Node: "e.ACTIVE", Number: 1},
+		{Node: "e.DONE", Number: 2},
+	}
+	got := assignEnumOrdinals(values, nil, func(Diagnostic) {})
+
+	want := map[NodeID]int32{"e.UNSPECIFIED": 0, "e.RUNNING": 1, "e.ACTIVE": 1, "e.DONE": 2}
+	seen := map[int32]bool{}
+	for _, a := range got {
+		if a.Ordinal != want[a.Node] {
+			t.Errorf("%s got ordinal %d, want %d", a.Node, a.Ordinal, want[a.Node])
+		}
+		seen[a.Ordinal] = true
+	}
+	for ordinal := int32(0); ordinal < 3; ordinal++ {
+		if !seen[ordinal] {
+			t.Errorf("ordinal %d was never assigned; the alias left a gap", ordinal)
+		}
+	}
+}

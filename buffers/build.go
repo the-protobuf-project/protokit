@@ -117,7 +117,16 @@ func Build(p *protogen.Plugin, opts Options) (*Schema, error) {
 	b.resolveLayouts()
 
 	// Pass 4: services, and the imports every generated file turns out to need.
+	//
+	// Generated files only, for the reason assignSlots gives about messages: an
+	// imported service's ordinals belong to the module that emits it. Building one
+	// here would record a dependency's method slots into this repository's ledger
+	// and report on a proto this run has no standing to comment on — and the File
+	// it was attached to is discarded below in any case.
 	for _, f := range p.Files {
+		if !f.Generate {
+			continue
+		}
 		file := b.files[f.Desc.Path()]
 		for _, s := range f.Services {
 			file.Services = append(file.Services, b.service(s, file))

@@ -127,6 +127,12 @@ func ParseStrict(spec string) (Strictness, error) {
 		if !knownRule(rule) {
 			return s, fmt.Errorf("strict: unknown rule %q (valid rules: %s)", rule, ruleList())
 		}
+		// Same reasoning as the unknown-rule check above: in a hand-typed spec,
+		// "ordinal:error,ordinal:warn" is a mistake, and quietly keeping the last
+		// one means the setting the author believed they wrote never applied.
+		if _, dup := s.byID[rule]; dup {
+			return s, fmt.Errorf("strict: rule %q is set more than once", rule)
+		}
 		switch strings.TrimSpace(level) {
 		case "error":
 			s.byID[rule] = SeverityError

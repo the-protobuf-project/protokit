@@ -109,9 +109,21 @@ func assignFieldOrdinals(
 	slots := make([]Slot, 0, len(held))
 	for _, number := range held {
 		ordinal := derived[number]
-		if _, taken := byOrdinal[ordinal]; taken {
-			// A pin landed on the slot a reserved number was holding. The pin
-			// wins — it was reported above — and the placeholder would collide.
+		if other, taken := byOrdinal[ordinal]; taken {
+			// A pin landed on the slot a reserved number was holding. The pin wins and
+			// the placeholder is dropped, and nothing above has reported it: the clash
+			// check only fires when two *live* fields want one ordinal, and this slot
+			// has one. It still has to be said. `reserved` means a field was deleted
+			// from that slot, so a consumer compiled before the deletion is still
+			// reading it, and the pin has quietly aimed a different field at it.
+			report(Diagnostic{
+				Rule: RuleOrdinal,
+				Node: other,
+				Message: fmt.Sprintf("ordinal %d is pinned onto the slot reserved field number %d was holding open",
+					ordinal, number),
+				Hint: "a consumer compiled before that field was removed still reads this slot; " +
+					"pin to a free ordinal, or drop the `reserved` declaration if the slot is genuinely reusable",
+			})
 			continue
 		}
 		slots = append(slots, Slot{Ordinal: ordinal, Number: number})

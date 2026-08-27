@@ -130,7 +130,11 @@ func ParseLock(data []byte, source string) (*Lock, error) {
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	dec.KnownFields(true)
 
-	lock := NewLock()
+	// Decoded into a zero value rather than NewLock: NewLock pre-sets Version, so a
+	// ledger that omits the key would inherit the current version and satisfy the
+	// check below instead of failing it. reindex builds the lookup maps afterward,
+	// which is the only thing NewLock was supplying here.
+	lock := &Lock{}
 	if err := dec.Decode(lock); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", source, err)
 	}
@@ -144,30 +148,53 @@ func ParseLock(data []byte, source string) (*Lock, error) {
 
 // reindex rebuilds the lookup maps from the marshalled slices.
 func (l *Lock) reindex() {
-	l.msgIdx = make(map[NodeID]map[int32]int32, len(l.Messages))
-	for _, m := range l.Messages {
+	l.msgIdx = indexMessages(l.Messages)
+	l.enumIdx = indexEnums(l.Enums)
+	l.svcIdx = indexServices(l.Services)
+}
+
+// The three index builders below are separate from reindex so that Equal can
+// derive an index from the slices without depending on a Lock having been
+// reindexed. The slices are the ledger; the maps are a cache of it.
+
+// indexMessages indexes recorded field ordinals: node to number to ordinal.
+func indexMessages(ms []MessageSlots) map[NodeID]map[int32]int32 {
+	idx := make(map[NodeID]map[int32]int32, len(ms))
+	for _, m := range ms {
 		slots := make(map[int32]int32, len(m.Fields))
 		for _, f := range m.Fields {
 			slots[f.Number] = f.Ordinal
 		}
-		l.msgIdx[m.Node] = slots
+		idx[m.Node] = slots
 	}
-	l.enumIdx = make(map[NodeID]map[int32]int32, len(l.Enums))
-	for _, e := range l.Enums {
+	return idx
+}
+
+// indexEnums indexes recorded enum value ordinals the same way.
+func indexEnums(es []EnumSlots) map[NodeID]map[int32]int32 {
+	idx := make(map[NodeID]map[int32]int32, len(es))
+	for _, e := range es {
 		slots := make(map[int32]int32, len(e.Values))
 		for _, v := range e.Values {
 			slots[v.Number] = v.Ordinal
 		}
-		l.enumIdx[e.Node] = slots
+		idx[e.Node] = slots
 	}
-	l.svcIdx = make(map[NodeID]map[string]int32, len(l.Services))
-	for _, s := range l.Services {
+	return idx
+}
+
+// indexServices indexes recorded method ordinals by name, since methods have no
+// numbers.
+func indexServices(ss []ServiceSlots) map[NodeID]map[string]int32 {
+	idx := make(map[NodeID]map[string]int32, len(ss))
+	for _, s := range ss {
 		slots := make(map[string]int32, len(s.Methods))
 		for _, m := range s.Methods {
 			slots[m.Name] = m.Ordinal
 		}
-		l.svcIdx[s.Node] = slots
+		idx[s.Node] = slots
 	}
+	return idx
 }
 
 // FieldSlots returns the recorded field ordinals for a message, or nil when the
