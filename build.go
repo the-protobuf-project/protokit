@@ -71,13 +71,15 @@ func buildDatabases(p *protogen.Plugin, diags *diagnostics, readers []schema.Fac
 
 // finalizeIndexes runs the index passes that must see the complete index set —
 // including any a generator's enrichment added (e.g. orm.v1.table.indexes). It
-// synthesizes an index for every foreign-key column, auto-names unnamed indexes
+// indexes the order a nested resource's List pages in, synthesizes an index for
+// every foreign-key column not already covered, auto-names unnamed indexes
 // (idx_<table>_<cols>), and validates their columns exist. Kept out of
 // buildDatabases so it runs after enrichment: a declared index must be present
 // before it is named and before the FK indexes are appended, so both the order
 // and the generated names match a single-pass build.
 func finalizeIndexes(dbs []*schema.Database, diags *diagnostics) {
 	for _, db := range dbs {
+		indexParentPaging(db)
 		indexForeignKeys(db)
 		nameIndexes(db)
 		validateIndexes(db, diags)
