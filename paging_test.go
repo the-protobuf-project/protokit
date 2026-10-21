@@ -75,7 +75,7 @@ func TestIndexParentPaging(t *testing.T) {
 			},
 		},
 		{
-			name: "a top-level resource gets nothing",
+			name:  "a top-level resource gets nothing",
 			table: &schema.Table{Name: "users", PKColumn: "id", Columns: []*schema.Column{{Name: "id", PrimaryKey: true}}},
 			want:  nil,
 		},
