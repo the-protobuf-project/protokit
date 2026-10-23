@@ -15,6 +15,10 @@ import (
 // createdAt/updatedAt/deletedAt convention: create_time/update_time become
 // auto-managed NOT NULL audit timestamps, delete_time becomes a nullable indexed
 // soft-delete marker, and uid (the server-assigned id) is marked UNIQUE.
+//
+// update_time is indexed too: reading what changed since a moment -- a sync,
+// a change feed, a List ordered by update_time -- is the read it exists for,
+// and without an index every one of them scans the table.
 func applyAIPSystemFields(t *schema.Table) {
 	for _, c := range t.Columns {
 		switch c.Name {
@@ -27,6 +31,7 @@ func applyAIPSystemFields(t *schema.Table) {
 		case "update_time":
 			c.Type, c.Enum = schema.TypeTimestamp, nil
 			c.NotNull, c.Optional, c.AutoUpdate = true, false, true
+			t.Indexes = append(t.Indexes, &schema.Index{Columns: []string{"update_time"}})
 		case "delete_time":
 			c.Type, c.Enum = schema.TypeTimestamp, nil
 			c.NotNull, c.Optional = false, true // null = live row

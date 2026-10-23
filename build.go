@@ -81,6 +81,7 @@ func finalizeIndexes(dbs []*schema.Database, diags *diagnostics) {
 	for _, db := range dbs {
 		indexParentPaging(db)
 		indexForeignKeys(db)
+		dedupeIndexes(db)
 		nameIndexes(db)
 		validateIndexes(db, diags)
 	}
@@ -204,4 +205,29 @@ func schemaTable(resourceType, nameOverride string) (sName, tName string) {
 		tName = nameOverride
 	}
 	return
+}
+
+// dedupeIndexes drops an index another on the same table already is: the same
+// columns in the same order, unique or not alike. An implicit index (an AIP
+// system field's) and a declared one can coincide, and two copies would only
+// cost writes. A named index is kept over an unnamed one.
+func dedupeIndexes(db *schema.Database) {
+	for _, s := range db.Schemas {
+		for _, t := range s.Tables {
+			kept := t.Indexes[:0]
+			seen := map[string]int{} // key -> position in kept
+			for _, idx := range t.Indexes {
+				key := fmt.Sprintf("%v|%s", idx.Unique, strings.Join(idx.Columns, ","))
+				if i, ok := seen[key]; ok {
+					if kept[i].Name == "" && idx.Name != "" {
+						kept[i] = idx
+					}
+					continue
+				}
+				seen[key] = len(kept)
+				kept = append(kept, idx)
+			}
+			t.Indexes = kept
+		}
+	}
 }
