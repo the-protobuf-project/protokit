@@ -48,6 +48,19 @@ type Options struct {
 	// Version is the plugin build version, written into the generated-file banner.
 	// Empty renders as "(unknown)".
 	Version string
+
+	// References are paths to descriptor sets — binary
+	// google.protobuf.FileDescriptorSet, which a buf image also is — read only
+	// to discover the target of a reference no table of the run matches. They
+	// are never generated. Typical source:
+	//
+	//	buf build buf.build/the-protobuf-project/rfc:<commit> -o rfc.binpb
+	//
+	// A file the request itself carries is taken from the request, so an image
+	// may include the run's own files and its imports. The request's
+	// non-generated files are searched whether or not any are given here. See
+	// discover.go.
+	References []string
 }
 
 // Plugin is everything a generator binary contributes to one run: the targets it
@@ -93,8 +106,17 @@ func Build(p *protogen.Plugin, opts Options, readers []FacetReader, layout Layou
 		return nil, err
 	}
 
+	refs, err := loadReferences(opts.References)
+	if err != nil {
+		return nil, err
+	}
+	disc, err := newDiscovery(p, refs, sorted, layout)
+	if err != nil {
+		return nil, err
+	}
+
 	diags := &diagnostics{}
-	dbs, err := buildDatabases(p, diags, sorted, layout)
+	dbs, err := buildDatabases(p, diags, sorted, layout, disc)
 	if err != nil {
 		return nil, fmt.Errorf("protokit: schema inference failed: %w", err)
 	}

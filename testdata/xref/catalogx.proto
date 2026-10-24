@@ -1,0 +1,15 @@
+syntax = "proto3";
+
+package catalogx.v1;
+
+import "google/api/field_behavior.proto";
+import "google/api/resource.proto";
+
+// Shares the catalog database and the simple name "Resource".
+message Resource {
+  option (google.api.resource) = {
+    type: "catalogx.v1/Resource"
+    pattern: "things/{thing}"
+  };
+  string name = 1 [(google.api.field_behavior) = IDENTIFIER];
+}

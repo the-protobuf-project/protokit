@@ -101,6 +101,35 @@ type Table struct {
 	Indexes     []*Index
 	ForeignKeys []*ForeignKey
 	HasMany     []*HasManyRef
+
+	// ExternalForeignKeys are constraint-only foreign keys: the referencing
+	// column keeps no association (no relation, no HasManyRef, its FKModel stays
+	// empty), so a target stores it exactly as written. ForeignKey.Kind says why
+	// each one has no relation:
+	//
+	//   - ReferenceCrossDatabase: the target is generated into another Database
+	//     of the same build, and a target renders each Database on its own (one
+	//     Prisma schema, one GORM registry) so it cannot name the other's model.
+	//   - ReferenceDiscovered: the target is not generated in this run at all; it
+	//     was found in a file the run only looks up (an import, or a reference
+	//     image). See Options.References.
+	//   - ReferenceLocal: the target is in this Database, but it resolved only by
+	//     resource type. The model-name rule left such a column unresolved
+	//     before, so it has always stored the full resource name; an association
+	//     would make a target store the bare id instead.
+	//
+	// Every entry shares this Database's physical database (same provider, same
+	// URL; ReferencedDatabase names the target's Database). A target that writes
+	// DDL into the shared database (SQL, a migration step run after every
+	// registry) renders them as plain FOREIGN KEY constraints; every other
+	// target ignores them.
+	ExternalForeignKeys []*ForeignKey
+
+	// UnresolvedForeignKeys records each reference that became a soft FK — a
+	// plain indexed column with no constraint — with Kind ReferenceUnresolved and
+	// the reason in ForeignKey.Unresolved. Informational: nothing is rendered
+	// from it.
+	UnresolvedForeignKeys []*ForeignKey
 }
 
 // Column maps one proto field to one database column.
@@ -219,7 +248,41 @@ type ForeignKey struct {
 	ReferencedSchema string // schema of the target table (e.g. "bookstore_v1")
 	ReferencedTable  string // target table name (e.g. "authors")
 	ReferencedModel  string // singular Go model name (e.g. "Author")
-	ReferencedColumn string // actual PK column; "id" when table not found in database
+	ReferencedColumn string // the target column the values match: its PK, or its AIP name (see ReferencedType)
+
+	// ReferencedType is the AIP resource type a google.api.resource_reference
+	// names ("library.v1/Book"). Resolution matches it against each table's
+	// google.api.resource type before falling back to the model name, so a
+	// target whose model name was qualified on a collision ("Resource" →
+	// "ResourceResource") still resolves. Empty for parent and embed FKs.
+	//
+	// It also decides ReferencedColumn, which always matches the value the
+	// column stores. A relation (the column has an association) stores the bare
+	// id of a top-level target and references its PK; it stores the whole name
+	// of a nested target (a leaf id cannot rebuild it). A constraint-only FK
+	// (Table.ExternalForeignKeys) stores the value as written, the full resource
+	// name (AIP-122). Those two reference the target's unique name column.
+	ReferencedType string
+
+	// ReferencedPattern is the parent's resource pattern for an FK materialized
+	// from a nested resource pattern ("organizationalUnits/{organizational_unit}"
+	// for "organizationalUnits/{organizational_unit}/holds/{hold}"). Resolution
+	// matches it against each table's google.api.resource patterns when the
+	// model name does not resolve. Empty for resource_reference and embed FKs.
+	ReferencedPattern string
+
+	// ReferencedDatabase names the Database holding the target. Set only on a
+	// Table.ExternalForeignKeys entry; an ordinary FK's target is always in the
+	// referencing table's own Database.
+	ReferencedDatabase string
+
+	// Kind is how the reference resolved: see ReferenceKind. Resolution sets it
+	// on every foreign key; Table.ForeignKeys holds only ReferenceLocal ones.
+	Kind ReferenceKind
+
+	// Unresolved is why a ReferenceUnresolved foreign key has no target. Empty
+	// for every other kind.
+	Unresolved UnresolvedReason
 
 	// ReferencedProto is the full proto message name of the target, set for
 	// synthesized embed relations so resolution picks the exact table even when

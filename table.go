@@ -117,6 +117,7 @@ func (ctx *buildCtx) populateColumns(db *schema.Database, s *schema.Schema, t *s
 				ReferencedSchema: refSchema,
 				ReferencedTable:  refTable,
 				ReferencedModel:  refModel,
+				ReferencedType:   ref.GetType(),
 				OnDelete:         cs.OnDelete,
 				OnUpdate:         cs.OnUpdate,
 				// ReferencedColumn filled by resolveRelations after all tables built.

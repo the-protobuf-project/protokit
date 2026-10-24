@@ -1,0 +1,34 @@
+syntax = "proto3";
+
+// Mirrors freebusy's allocation package: generated in a run of its own, which
+// neither builds nor imports the RFC module it references.
+package freebusy.allocation.v1;
+
+import "google/api/field_behavior.proto";
+import "google/api/resource.proto";
+
+// Nested under an RFC organizational unit: a parent FK by pattern.
+message Hold {
+  option (google.api.resource) = {
+    type: "freebusy.allocation.v1/Hold"
+    pattern: "organizationalUnits/{organizational_unit}/holds/{hold}"
+  };
+  string name = 1 [(google.api.field_behavior) = IDENTIFIER];
+}
+
+message Allocation {
+  option (google.api.resource) = {
+    type: "freebusy.allocation.v1/Allocation"
+    pattern: "organizationalUnits/{organizational_unit}/allocations/{allocation}"
+  };
+  string name = 1 [(google.api.field_behavior) = IDENTIFIER];
+  // An RFC resource, by type.
+  string resource = 2 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference).type = "example.org/Resource"
+  ];
+  // Same run, nested target: a relation to the hold's name.
+  string hold = 3 [(google.api.resource_reference).type = "freebusy.allocation.v1/Hold"];
+  // Defined nowhere, discoverable or not.
+  string ghost = 4 [(google.api.resource_reference).type = "example.org/Ghost"];
+}

@@ -27,7 +27,10 @@ import (
 // their first value (column.go), every foreign-key column is indexed
 // (indexForeignKeys), and embedded child relations cascade/null on delete
 // (embed_fk.go). All remain overridable via the generator's options.
-func buildDatabases(p *protogen.Plugin, diags *diagnostics, readers []schema.FacetReader, layout schema.LayoutResolver) ([]*schema.Database, error) {
+//
+// disc finds a reference's target among files the run does not generate; nil
+// searches nothing beyond the run.
+func buildDatabases(p *protogen.Plugin, diags *diagnostics, readers []schema.FacetReader, layout schema.LayoutResolver, disc *discovery) ([]*schema.Database, error) {
 	byName := map[string]*schema.Database{}
 	var order []*schema.Database
 	ctx := newBuildCtx(p, diags, readers, layout)
@@ -60,7 +63,11 @@ func buildDatabases(p *protogen.Plugin, diags *diagnostics, readers []schema.Fac
 			deStutterTables(db)
 		}
 		qualifyModels(db, diags)
-		resolveRelations(db, diags)
+	}
+	// Every database's names are final before any resolves, so a reference into
+	// another database of this build (an external FK) names the real table.
+	resolveRelations(order, disc, diags)
+	for _, db := range order {
 		dedupeEnums(db, diags)
 	}
 	// Emitted last so the aggregate counts cover every node the build touched,

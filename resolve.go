@@ -1,40 +1,46 @@
 package protokit
 
 // resolve.go is the second IR pass: after every file has been folded into the
-// database, FK references are resolved to real PK columns and HasMany
+// database, FK references are resolved to real target columns and HasMany
 // back-references are populated so generators have both sides of every relation.
+// A reference whose target is generated into another database of the same build
+// is handed to resolveExternal (external_fk.go).
 
 import (
 	"github.com/the-protobuf-project/protokit/naming"
 	"github.com/the-protobuf-project/protokit/schema"
 )
 
-// resolveRelations corrects each ForeignKey against the live referenced table:
-// the real schema (datasource.schema overrides shift tables away from the
-// resource-type-derived schema), the real table name, and the real PK column.
-// It also appends a HasManyRef to the referenced table so both relation sides
-// exist.
-//
-// A foreign key is dropped (its scalar column kept) when it references a model
-// not present in the database — a typo'd resource_reference or a reference to a
-// model outside the generate set. Emitting a relation to a non-existent model
-// produces a schema that fails Prisma validation, so the relation is removed
-// and the issue recorded on diags (a hard error under --strict). A FK whose
-// scalar column went missing is likewise dropped defensively.
-func resolveRelations(db *schema.Database, diags *diagnostics) {
-	type located struct {
-		schema *schema.Schema
-		table  *schema.Table
+// resolveRelations resolves every database's foreign keys. The tables of every
+// database are indexed first, so a reference that crosses databases sees the
+// final names of its target (de-stuttered and qualified before this runs). disc
+// is searched only for a target no database of the run has.
+func resolveRelations(dbs []*schema.Database, disc *discovery, diags *diagnostics) {
+	idx := make(map[*schema.Database]*tableIndex, len(dbs))
+	for _, db := range dbs {
+		idx[db] = indexTables(db)
 	}
-	byModel := map[string]located{}
-	byProto := map[string]located{}
-	for _, s := range db.Schemas {
-		for _, t := range s.Tables {
-			byModel[t.ModelName] = located{schema: s, table: t}
-			byProto[t.ProtoMessage] = located{schema: s, table: t}
-		}
+	for _, db := range dbs {
+		resolveDatabase(db, dbs, idx, disc, diags)
 	}
+}
 
+// resolveDatabase corrects each ForeignKey against the live referenced table:
+// the real schema (datasource.schema overrides shift tables away from the
+// resource-type-derived schema), the real table name, and the real target
+// column. It also appends a HasManyRef to the referenced table so both relation
+// sides exist.
+//
+// Only a reference the model-name rule resolves becomes a relation. One that
+// resolves in db only by resource type or parent pattern, one whose target is in
+// another database of the build, and one whose target is discovered outside the
+// run become constraint-only FKs (constrain); one with no usable target degrades
+// to a soft FK (its scalar column kept and indexed, no relation), and the reason
+// is recorded on diags (a hard error under --strict). Emitting a relation to a
+// non-existent model produces a schema that fails Prisma validation, so no
+// dangling FK is ever emitted. A FK whose scalar column went missing is likewise
+// dropped defensively.
+func resolveDatabase(db *schema.Database, dbs []*schema.Database, idx map[*schema.Database]*tableIndex, disc *discovery, diags *diagnostics) {
 	// link pairs each resolved FK with the HasManyRef it produced, plus the model
 	// pair they connect, so relation names can be assigned once all FKs are known.
 	type link struct {
@@ -53,17 +59,23 @@ func resolveRelations(db *schema.Database, diags *diagnostics) {
 						t.Name, fk.Column)
 					continue
 				}
-				// Embed relations pin the exact target message; resource_reference
-				// FKs resolve by (possibly qualified) model name.
-				ref, ok := byProto[fk.ReferencedProto]
-				if fk.ReferencedProto == "" || !ok {
-					ref, ok = byModel[fk.ReferencedModel]
-				}
+				ref, byName, ok := idx[db].lookup(fk)
 				if !ok {
-					diags.warnf("ref", "table %q column %q references unknown model %q; "+
-						"kept as a soft FK (scalar column + index, no relation)",
-						t.Name, fk.Column, fk.ReferencedModel)
-					softFK(t, fk.Column, fk.ReferencedModel)
+					resolveExternal(db, dbs, idx, disc, t, fk, diags)
+					continue
+				}
+				if !byName {
+					// The model-name rule never resolved this reference, so the column
+					// has always been stored as written; a relation would change that.
+					constrain(db, t, fk, ref, schema.ReferenceLocal, diags)
+					continue
+				}
+				col, ok := referencedColumn(fk, ref.table, false)
+				if !ok {
+					unresolved(t, fk, schema.UnresolvedNoNameColumn, diags,
+						"table %q column %q stores %q resource names, but %s.%s has no unique "+
+							"name column to reference; kept as a soft FK (scalar column + index, no relation)",
+						t.Name, fk.Column, ref.table.ModelName, ref.schema.Name, ref.table.Name)
 					continue
 				}
 				// Reflect any model-name qualification onto the FK and its column.
@@ -71,9 +83,8 @@ func resolveRelations(db *schema.Database, diags *diagnostics) {
 				setColumnFKModel(t, fk.Column, ref.table.ModelName)
 				fk.ReferencedSchema = ref.schema.Name
 				fk.ReferencedTable = ref.table.Name
-				if fk.ReferencedColumn = ref.table.PKColumn; fk.ReferencedColumn == "" {
-					fk.ReferencedColumn = "id"
-				}
+				fk.ReferencedColumn = col
+				fk.Kind = schema.ReferenceLocal
 				alignFKType(t, fk, ref.table)
 				hm := &schema.HasManyRef{Model: t.ModelName, Field: t.Name, ViaFK: fk.Column}
 				ref.table.HasMany = append(ref.table.HasMany, hm)

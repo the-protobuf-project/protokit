@@ -50,9 +50,10 @@ func materializeParents(t *schema.Table, res *annotations.ResourceDescriptor) {
 			FKModel: refModel,
 		})
 		t.ForeignKeys = append(t.ForeignKeys, &schema.ForeignKey{
-			Column:          col,
-			ReferencedModel: refModel,
-			OnDelete:        "CASCADE", // an owned child cascades from its parent
+			Column:            col,
+			ReferencedModel:   refModel,
+			ReferencedPattern: strings.Join(segs[:2*i+2], "/"),
+			OnDelete:          "CASCADE", // an owned child cascades from its parent
 		})
 	}
 }

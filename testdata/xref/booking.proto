@@ -1,0 +1,43 @@
+syntax = "proto3";
+
+package booking.v1;
+
+import "google/api/field_behavior.proto";
+import "google/api/resource.proto";
+
+// A top-level resource in the booking database.
+message Owner {
+  option (google.api.resource) = {
+    type: "booking.v1/Owner"
+    pattern: "owners/{owner}"
+  };
+  string name = 1 [(google.api.field_behavior) = IDENTIFIER];
+}
+
+// Nested under a site that lives in the catalog database.
+message Hold {
+  option (google.api.resource) = {
+    type: "booking.v1/Hold"
+    pattern: "sites/{site}/holds/{hold}"
+  };
+  string name = 1 [(google.api.field_behavior) = IDENTIFIER];
+  // Cross-database, resolvable: catalog shares the physical database.
+  string resource = 2 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference).type = "catalog.v1/Resource"
+  ];
+  // Unresolvable: no table anywhere has this type.
+  string ghost = 3 [(google.api.resource_reference).type = "nowhere.v1/Ghost"];
+  // Unresolvable: the remote database is another physical database.
+  string remote = 4 [(google.api.resource_reference).type = "remote.v1/Remote"];
+}
+
+message Booking {
+  option (google.api.resource) = {
+    type: "booking.v1/Booking"
+    pattern: "owners/{owner}/bookings/{booking}"
+  };
+  string name = 1 [(google.api.field_behavior) = IDENTIFIER];
+  // Same database, nested target: the column stores the hold's name.
+  string hold = 2 [(google.api.resource_reference).type = "booking.v1/Hold"];
+}

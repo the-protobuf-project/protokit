@@ -1,0 +1,16 @@
+syntax = "proto3";
+
+// Mirrors protobuf-rfc's RFC 9073 resource: "rfc" database, schema "resource".
+package protobuf.rfc9073.resource.v1;
+
+import "google/api/field_behavior.proto";
+import "google/api/resource.proto";
+
+message Resource {
+  option (google.api.resource) = {
+    type: "example.org/Resource"
+    pattern: "resources/{resource}"
+  };
+  string name = 1 [(google.api.field_behavior) = IDENTIFIER];
+  string organizational_unit = 2 [(google.api.resource_reference).type = "example.org/OrganizationalUnit"];
+}

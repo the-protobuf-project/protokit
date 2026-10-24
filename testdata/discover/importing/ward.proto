@@ -1,0 +1,19 @@
+syntax = "proto3";
+
+// A run whose file imports the referenced module, so the request carries it
+// (not generated) and discovery needs no reference image. The import is
+// otherwise unused, which is how a project opts into this source.
+package freebusy.ward.v1;
+
+import "google/api/field_behavior.proto";
+import "google/api/resource.proto";
+import "orgunit.proto";
+
+message Ward {
+  option (google.api.resource) = {
+    type: "freebusy.ward.v1/Ward"
+    pattern: "wards/{ward}"
+  };
+  string name = 1 [(google.api.field_behavior) = IDENTIFIER];
+  string organizational_unit = 2 [(google.api.resource_reference).type = "example.org/OrganizationalUnit"];
+}

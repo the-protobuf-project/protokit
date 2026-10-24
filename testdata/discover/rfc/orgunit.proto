@@ -1,0 +1,16 @@
+syntax = "proto3";
+
+// Mirrors protobuf-rfc's RFC 4519 organizational unit: generated in its own
+// run, routed into the "rfc" database, schema "orgunit".
+package protobuf.rfc4519.organizational_unit.v1;
+
+import "google/api/field_behavior.proto";
+import "google/api/resource.proto";
+
+message OrganizationalUnit {
+  option (google.api.resource) = {
+    type: "example.org/OrganizationalUnit"
+    pattern: "organizationalUnits/{organizational_unit}"
+  };
+  string name = 1 [(google.api.field_behavior) = IDENTIFIER];
+}

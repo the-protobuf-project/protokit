@@ -1,0 +1,15 @@
+syntax = "proto3";
+
+package remote.v1;
+
+import "google/api/field_behavior.proto";
+import "google/api/resource.proto";
+
+// Generated in the same build, but into another physical database.
+message Remote {
+  option (google.api.resource) = {
+    type: "remote.v1/Remote"
+    pattern: "remotes/{remote}"
+  };
+  string name = 1 [(google.api.field_behavior) = IDENTIFIER];
+}

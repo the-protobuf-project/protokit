@@ -1,0 +1,35 @@
+syntax = "proto3";
+
+package catalog.v1;
+
+import "google/api/field_behavior.proto";
+import "google/api/resource.proto";
+
+// A site owns holds in another database.
+message Site {
+  option (google.api.resource) = {
+    type: "catalog.v1/Site"
+    pattern: "sites/{site}"
+  };
+  string name = 1 [(google.api.field_behavior) = IDENTIFIER];
+}
+
+// A bookable resource. Its model name collides with catalogx.v1.Resource, so
+// both are qualified and only the resource type still finds this one.
+message Resource {
+  option (google.api.resource) = {
+    type: "catalog.v1/Resource"
+    pattern: "resources/{resource}"
+  };
+  string name = 1 [(google.api.field_behavior) = IDENTIFIER];
+}
+
+// An asset references a resource in its own database by type.
+message Asset {
+  option (google.api.resource) = {
+    type: "catalog.v1/Asset"
+    pattern: "assets/{asset}"
+  };
+  string name = 1 [(google.api.field_behavior) = IDENTIFIER];
+  string resource = 2 [(google.api.resource_reference).type = "catalog.v1/Resource"];
+}
