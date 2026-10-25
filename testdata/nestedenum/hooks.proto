@@ -1,0 +1,53 @@
+syntax = "proto3";
+
+package hooks.v1;
+
+import "google/api/field_behavior.proto";
+import "google/api/resource.proto";
+
+// A webhook. Its nested State shares a simple name with Delivery.State.
+message Webhook {
+  option (google.api.resource) = {
+    type: "hooks.v1/Webhook"
+    pattern: "webhooks/{webhook}"
+  };
+
+  // The webhook's state.
+  enum State {
+    STATE_UNSPECIFIED = 0;
+    STATE_ACTIVE = 1;
+    STATE_PAUSED = 2;
+  }
+
+  string name = 1 [(google.api.field_behavior) = IDENTIFIER];
+  State state = 2 [(google.api.field_behavior) = REQUIRED];
+}
+
+// A delivery of a webhook, with its own nested State.
+message Delivery {
+  option (google.api.resource) = {
+    type: "hooks.v1/Delivery"
+    pattern: "deliveries/{delivery}"
+  };
+
+  // The delivery's state.
+  enum State {
+    STATE_UNSPECIFIED = 0;
+    STATE_PENDING = 1;
+    STATE_SUCCEEDED = 2;
+    STATE_FAILED = 3;
+  }
+
+  string name = 1 [(google.api.field_behavior) = IDENTIFIER];
+  State state = 2;
+  // The same enum as Webhook.state: one enum, not two.
+  Webhook.State webhook_state = 3;
+  Phase phase = 4;
+}
+
+// A top-level enum that collides with relay.v1.Phase once both packages share
+// the one schema.
+enum Phase {
+  PHASE_UNSPECIFIED = 0;
+  PHASE_EARLY = 1;
+}

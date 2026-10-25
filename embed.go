@@ -60,6 +60,10 @@ type buildCtx struct {
 	// build, keyed "<reader key>/<option>", and flushed as one diagnostic per
 	// entry. See noteDeprecated.
 	deprecations map[string]*deprecationNote
+
+	// enumSrc maps each built proto enum back to its descriptor, so a later
+	// enum that shares its simple name can rename both (see qualifyLocalEnums).
+	enumSrc map[*schema.Enum]*protogen.Enum
 }
 
 // deprecationNote counts uses of one deprecated option and remembers the first
@@ -143,6 +147,7 @@ func newBuildCtx(p *protogen.Plugin, diags *diagnostics, readers []schema.FacetR
 		tblCache:     map[schema.NodeID]schema.TableStructure{},
 		colCache:     map[schema.NodeID]schema.ColumnStructure{},
 		deprecations: map[string]*deprecationNote{},
+		enumSrc:      map[*schema.Enum]*protogen.Enum{},
 	}
 }
 

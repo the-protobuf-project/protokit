@@ -1,0 +1,23 @@
+syntax = "proto3";
+
+package relay.v1;
+
+import "google/api/field_behavior.proto";
+import "google/api/resource.proto";
+
+// A relay shares the hooks schema.
+message Relay {
+  option (google.api.resource) = {
+    type: "relay.v1/Relay"
+    pattern: "relays/{relay}"
+  };
+
+  string name = 1 [(google.api.field_behavior) = IDENTIFIER];
+  Phase phase = 2;
+}
+
+// Phase collides with hooks.v1.Phase.
+enum Phase {
+  PHASE_UNSPECIFIED = 0;
+  PHASE_LATE = 1;
+}

@@ -8,10 +8,12 @@ package protokit
 // that generator's enrichment pass, not here.
 
 import (
+	"strconv"
 	"strings"
 
 	"google.golang.org/genproto/googleapis/api/annotations"
 	"google.golang.org/protobuf/compiler/protogen"
+	"google.golang.org/protobuf/reflect/protoreflect"
 
 	"github.com/the-protobuf-project/protokit/naming"
 	"github.com/the-protobuf-project/protokit/schema"
@@ -37,7 +39,7 @@ func (ctx *buildCtx) buildColumn(s *schema.Schema, f *protogen.Field) *schema.Co
 	// type system; protokit sets no backend SQLType. An enum field instead carries
 	// schema.Column.Enum, and each generator renders its own native enum reference.
 	if f.Enum != nil && !f.Desc.IsList() {
-		col.Enum = enumByName(s, f.Enum)
+		col.Enum = ctx.enumOf(s, f.Enum)
 	}
 	for _, b := range fieldBehaviors(f) {
 		switch b {
@@ -58,20 +60,24 @@ func (ctx *buildCtx) buildColumn(s *schema.Schema, f *protogen.Field) *schema.Co
 	return col
 }
 
-// enumByName returns the IR enum for e within schema s, building it on first use.
-func enumByName(s *schema.Schema, e *protogen.Enum) *schema.Enum {
-	name := string(e.Desc.Name())
+// enumOf returns the IR enum for e within schema s, building it on first use.
+// Enums are keyed by their full proto name, as oneof discriminators are, so two
+// distinct enums sharing a simple name (Webhook.State and Delivery.State) stay
+// two enums; qualifyLocalEnums then gives them distinct names.
+func (ctx *buildCtx) enumOf(s *schema.Schema, e *protogen.Enum) *schema.Enum {
+	full := string(e.Desc.FullName())
 	for _, ex := range s.Enums {
-		if ex.Name == name {
+		if ex.ProtoName == full {
 			return ex
 		}
 	}
+	name := string(e.Desc.Name())
 	en := &schema.Enum{
 		Name:         name,
 		SQLName:      naming.SnakeCase(name),
 		LocalName:    name,
 		LocalSQLName: naming.SnakeCase(name),
-		ProtoName:    string(e.Desc.FullName()),
+		ProtoName:    full,
 		PgSchema:     s.Name,
 		Comment:      cleanComment(e.Comments.Leading),
 		SourceFile:   sourceFileBase(e.Desc.ParentFile().Path()),
@@ -107,7 +113,70 @@ func enumByName(s *schema.Schema, e *protogen.Enum) *schema.Enum {
 		})
 	}
 	s.Enums = append(s.Enums, en)
+	ctx.enumSrc[en] = e
+	ctx.qualifyLocalEnums(s, name)
 	return en
+}
+
+// qualifyLocalEnums gives distinct names to the distinct proto enums of schema s
+// that share the simple name. Schema-namespaced targets render LocalName bare
+// (one Go package, one SQL schema), so two "State" enums would otherwise declare
+// one type twice. A nested enum takes the names of the messages enclosing it
+// ("Webhook.State" → "WebhookState", protoc-gen-go's Go name without the
+// underscore); a top-level one keeps its simple name. Two that still collide —
+// top-level enums of packages merged into one schema — gain their package's
+// domain ("shop.cart.v1" → "CartState"), then a number as a last resort.
+//
+// Every participant is renamed, not only the later one, so an enum's name
+// doesn't hang on which field the build met first. A schema with one enum of
+// the name is untouched. Enum values keep their prefix stripped by the simple
+// name ("STATE_ACTIVE" → "ACTIVE"), which is the proto's own prefix.
+func (ctx *buildCtx) qualifyLocalEnums(s *schema.Schema, name string) {
+	var group []*schema.Enum
+	for _, ex := range s.Enums {
+		if src := ctx.enumSrc[ex]; src != nil && string(src.Desc.Name()) == name {
+			group = append(group, ex)
+		}
+	}
+	if len(group) < 2 {
+		return
+	}
+	names := make([]string, len(group))
+	count := map[string]int{}
+	for i, ex := range group {
+		names[i] = scopedEnumName(ctx.enumSrc[ex].Desc)
+		count[names[i]]++
+	}
+	for i, ex := range group {
+		if count[names[i]] > 1 {
+			pkg := strings.ReplaceAll(string(ctx.enumSrc[ex].Desc.ParentFile().Package()), ".", "_")
+			names[i] = naming.PascalGo(naming.SchemaDomain(pkg)) + names[i]
+		}
+	}
+	used := map[string]bool{}
+	for i, ex := range group {
+		q := names[i]
+		for n := 2; used[q]; n++ {
+			q = names[i] + strconv.Itoa(n)
+		}
+		used[q] = true
+		ex.Name, ex.LocalName = q, q
+		ex.SQLName, ex.LocalSQLName = naming.SnakeCase(q), naming.SnakeCase(q)
+	}
+}
+
+// scopedEnumName is e's simple name prefixed with the names of the messages
+// enclosing it, outermost first: "Outer.Inner.State" → "OuterInnerState".
+func scopedEnumName(e protoreflect.EnumDescriptor) string {
+	name := string(e.Name())
+	for p := e.Parent(); p != nil; p = p.Parent() {
+		m, ok := p.(protoreflect.MessageDescriptor)
+		if !ok {
+			break
+		}
+		name = string(m.Name()) + name
+	}
+	return name
 }
 
 // startsWithLetter reports whether s begins with an ASCII letter — the leading

@@ -121,6 +121,17 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Fixed
 
+- **Two enums sharing a simple name in one schema stay two enums.** The IR
+  looked enums up by simple name, so `Webhook.State` and `Delivery.State` in
+  one package became one enum: the second column took the first's values, and
+  protoc-gen-store's GORM converters failed to compile against the second
+  proto type. Enums are now keyed by full proto name, as oneof discriminators
+  already were, and the colliding ones are named apart by their enclosing
+  messages (`WebhookState` / `webhook_state`); two top-level enums of
+  packages merged into one schema gain the package domain (`CartPhase`). An
+  enum whose simple name is unique in its schema keeps it, so existing output
+  is unchanged.
+
 - **A resource_reference resolves by resource type first.** Resolution by
   model name missed every target whose name was qualified on a collision
   (`Resource` → `ResourceResource`), leaving a soft FK to a table in the same
