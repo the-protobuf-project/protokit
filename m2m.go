@@ -26,6 +26,7 @@ type m2mReq struct {
 	parent      *schema.Table   // table carrying the repeated reference field
 	field       *protogen.Field // the repeated string + resource_reference field
 	targetModel string          // referenced model name (from the resource type)
+	targetType  string          // referenced resource type, e.g. "acme.v1/Book"
 	onDelete    string
 	onUpdate    string
 }
@@ -38,6 +39,11 @@ type m2mReq struct {
 func (ctx *buildCtx) normalizeM2M(diags *diagnostics) {
 	for _, req := range ctx.m2m {
 		child := findTableByModel(req.db, req.targetModel)
+		if child != nil && otherType(child, req.targetType) {
+			// Same model name, another resource type: a reference into
+			// another service, not this table.
+			child = nil
+		}
 		if child == nil {
 			ctx.fallbackArrayColumn(req)
 			diags.warnf("ref", "table %q repeated reference %q targets unknown model %q; "+

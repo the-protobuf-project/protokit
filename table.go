@@ -71,7 +71,7 @@ func appendDeclaredIndexes(t *schema.Table, declared []*schema.Index) {
 func (ctx *buildCtx) populateColumns(db *schema.Database, s *schema.Schema, t *schema.Table, msg *protogen.Message) {
 	for _, f := range msg.Fields {
 		cs := ctx.columnOf(f.Desc)
-		if target := normalizableMessage(f); target != "" {
+		if target := ctx.normalizableMessage(f); target != "" {
 			if cs.Skip {
 				continue
 			}
@@ -92,6 +92,7 @@ func (ctx *buildCtx) populateColumns(db *schema.Database, s *schema.Schema, t *s
 			ctx.m2m = append(ctx.m2m, &m2mReq{
 				db: db, schemaName: s.Name, parent: t, field: f,
 				targetModel: modelNameFromType(ref.GetType()),
+				targetType:  ref.GetType(),
 				onDelete:    cs.OnDelete,
 				onUpdate:    cs.OnUpdate,
 			})
@@ -102,6 +103,7 @@ func (ctx *buildCtx) populateColumns(db *schema.Database, s *schema.Schema, t *s
 		if col == nil {
 			continue
 		}
+		col.Document = ctx.documentField(f)
 		t.Columns = append(t.Columns, col)
 		if col.PrimaryKey && t.PKColumn == "" {
 			t.PKColumn = col.Name

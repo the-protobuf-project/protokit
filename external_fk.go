@@ -91,7 +91,7 @@ func (idx *tableIndex) lookup(fk *schema.ForeignKey) (l located, byName, ok bool
 			return ls[0], byName, true
 		}
 	}
-	if l, ok := idx.byModel[fk.ReferencedModel]; ok {
+	if l, ok := idx.byModel[fk.ReferencedModel]; ok && !otherType(l.table, fk.ReferencedType) {
 		return l, byName, true
 	}
 	if fk.ReferencedPattern != "" {
@@ -107,8 +107,20 @@ func (idx *tableIndex) byNameRule(fk *schema.ForeignKey) bool {
 	if _, ok := idx.byProto[fk.ReferencedProto]; ok && fk.ReferencedProto != "" {
 		return true
 	}
-	_, ok := idx.byModel[fk.ReferencedModel]
-	return ok
+	l, ok := idx.byModel[fk.ReferencedModel]
+	return ok && !otherType(l.table, fk.ReferencedType)
+}
+
+// otherType reports whether t is a resource of a type other than typ: a
+// reference to "freebusy.reservation.v1/Reservation" must not resolve, by its
+// model name, to a build's own "aperio.booking.v1/Reservation". A
+// value-object table, or a reference that names no type, never conflicts.
+func otherType(t *schema.Table, typ string) bool {
+	if typ == "" {
+		return false
+	}
+	res := tableResource(t)
+	return res != nil && res.GetType() != "" && res.GetType() != typ
 }
 
 // external returns fk's matches in idx: by resource type for a

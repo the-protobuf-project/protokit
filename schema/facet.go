@@ -222,6 +222,21 @@ type LayoutResolver interface {
 	DedupeSchemaTable() bool
 }
 
+// DocumentResolver is implemented by a LayoutResolver whose policy stores some
+// message types whole. A field of such a type becomes one JSON column, marked
+// Column.Document, instead of a table of its own with a foreign key -- for a
+// deep vocabulary of value objects (a schema module's nested types, imported
+// as they are) whose structure is read and written as a unit, where
+// normalizing every level would make a table of every nested type.
+//
+// Optional: a LayoutResolver that does not implement it normalizes every
+// relationalizable message, as before.
+type DocumentResolver interface {
+	// Document reports whether a field of message type fullName is stored as
+	// a document.
+	Document(fullName string) bool
+}
+
 // IR is the complete output of a build: the neutral schema tree, plus the facet
 // side-tables each registered reader contributed.
 //

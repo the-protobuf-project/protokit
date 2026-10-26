@@ -1,0 +1,30 @@
+syntax = "proto3";
+
+package stay.v1;
+
+import "google/api/field_behavior.proto";
+import "google/api/resource.proto";
+import "vocab.proto";
+
+// A booking, written in an imported vocabulary.
+message Booking {
+  option (google.api.resource) = {
+    type: "stay.v1/Booking"
+    pattern: "bookings/{booking}"
+  };
+
+  string name = 1 [(google.api.field_behavior) = IDENTIFIER];
+  // A column of the booking's own.
+  string state = 2;
+  // One document.
+  vocab.v1.Stay stay = 3 [(google.api.field_behavior) = OPTIONAL];
+  // A document array.
+  repeated vocab.v1.Guest guests = 4 [(google.api.field_behavior) = OPTIONAL];
+  // Still a table: not a vocabulary type.
+  Note note = 5 [(google.api.field_behavior) = OPTIONAL];
+}
+
+// A note of the booking's own package, normalized as before.
+message Note {
+  string text = 1;
+}

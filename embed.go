@@ -158,16 +158,30 @@ func newBuildCtx(p *protogen.Plugin, diags *diagnostics, readers []schema.FacetR
 // google.protobuf wrappers (Struct, Any, …) — are not normalized; they keep
 // their scalar / JSONB mapping. Every other message is, including imported value
 // types such as google.type.Money (see types.Relationalizable).
-func normalizableMessage(f *protogen.Field) string {
+//
+// A message the layout names a document (schema.DocumentResolver) is not
+// normalized either: it is one JSON column (see documentField).
+func (ctx *buildCtx) normalizableMessage(f *protogen.Field) string {
 	md := f.Desc.Message()
 	if md == nil || f.Desc.IsMap() {
 		return ""
 	}
 	full := string(md.FullName())
-	if !types.Relationalizable(full) {
+	if !types.Relationalizable(full) || ctx.documentField(f) {
 		return ""
 	}
 	return full
+}
+
+// documentField reports whether f is a message field the layout stores whole
+// as a document.
+func (ctx *buildCtx) documentField(f *protogen.Field) bool {
+	md := f.Desc.Message()
+	if md == nil || f.Desc.IsMap() || !types.Relationalizable(string(md.FullName())) {
+		return false
+	}
+	dr, ok := ctx.layout.(schema.DocumentResolver)
+	return ok && dr.Document(string(md.FullName()))
 }
 
 // isRequiredField reports whether f carries REQUIRED or IDENTIFIER field_behavior.

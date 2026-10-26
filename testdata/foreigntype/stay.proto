@@ -1,0 +1,22 @@
+syntax = "proto3";
+
+package stay.v1;
+
+import "google/api/field_behavior.proto";
+import "google/api/resource.proto";
+
+// A reservation of this service, sharing its simple name with the engine's.
+message Reservation {
+  option (google.api.resource) = {
+    type: "stay.v1/Reservation"
+    pattern: "reservations/{reservation}"
+  };
+
+  string name = 1 [(google.api.field_behavior) = IDENTIFIER];
+  // One reservation in the engine, another service.
+  string engine_reservation = 2 [(google.api.resource_reference).type = "engine.v1/Reservation"];
+  // Several of them.
+  repeated string engine_reservations = 3 [(google.api.resource_reference).type = "engine.v1/Reservation"];
+  // One of this service's own: still a relation.
+  string replaces = 4 [(google.api.resource_reference).type = "stay.v1/Reservation"];
+}

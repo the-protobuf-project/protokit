@@ -1,0 +1,80 @@
+syntax = "proto3";
+
+package hotel.v1;
+
+import "google/api/field_behavior.proto";
+import "google/api/resource.proto";
+
+// A hotel. Its nested Address shares a simple name with the top-level one,
+// and its Images and Videos each nest an Item.Description.
+message Hotel {
+  option (google.api.resource) = {
+    type: "hotel.v1/Hotel"
+    pattern: "hotels/{hotel}"
+  };
+
+  // Where deposits are sent.
+  message Address {
+    string line = 1 [(google.api.field_behavior) = OPTIONAL];
+  }
+
+  // The hotel's images.
+  message Images {
+    // One image.
+    message Item {
+      // Its caption.
+      message Description {
+        string caption = 1 [(google.api.field_behavior) = OPTIONAL];
+      }
+      Description description = 1 [(google.api.field_behavior) = OPTIONAL];
+    }
+    repeated Item items = 1 [(google.api.field_behavior) = OPTIONAL];
+  }
+
+  // The hotel's videos.
+  message Videos {
+    // One video.
+    message Item {
+      // Its transcript.
+      message Description {
+        string transcript = 1 [(google.api.field_behavior) = OPTIONAL];
+      }
+      Description description = 1 [(google.api.field_behavior) = OPTIONAL];
+    }
+    repeated Item items = 1 [(google.api.field_behavior) = OPTIONAL];
+  }
+
+  // A rule, nesting an enum of its own name.
+  message Rule {
+    // The rule's kind.
+    enum Rule {
+      RULE_UNSPECIFIED = 0;
+      RULE_CANCELABLE = 1;
+    }
+    Rule rule = 1 [(google.api.field_behavior) = OPTIONAL];
+  }
+
+  string name = 1 [(google.api.field_behavior) = IDENTIFIER];
+  repeated Rule rules = 6 [(google.api.field_behavior) = OPTIONAL];
+  Taxes taxes = 7 [(google.api.field_behavior) = OPTIONAL];
+  repeated Tax extra_taxes = 8 [(google.api.field_behavior) = OPTIONAL];
+  .hotel.v1.Address address = 2 [(google.api.field_behavior) = OPTIONAL];
+  Hotel.Address deposit_address = 3 [(google.api.field_behavior) = OPTIONAL];
+  Images images = 4 [(google.api.field_behavior) = OPTIONAL];
+  Videos videos = 5 [(google.api.field_behavior) = OPTIONAL];
+}
+
+// One tax, whose table name pluralizes like Taxes.
+message Tax {
+  string code = 1 [(google.api.field_behavior) = OPTIONAL];
+}
+
+// The taxes of a stay.
+message Taxes {
+  repeated Tax taxes = 1 [(google.api.field_behavior) = OPTIONAL];
+}
+
+// The hotel's street address.
+message Address {
+  string street = 1 [(google.api.field_behavior) = OPTIONAL];
+}

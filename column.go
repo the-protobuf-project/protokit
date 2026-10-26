@@ -97,9 +97,10 @@ func (ctx *buildCtx) enumOf(s *schema.Schema, e *protogen.Enum) *schema.Enum {
 		// is the rendered identifier and must start with a letter (a Prisma enum
 		// value rule): when stripping the enum prefix leaves a digit-leading value
 		// (ASPECT_RATIO_3_4 → "3_4"), fall back to the full proto value name, which
-		// is letter-leading. MapName keeps the short form for the DB ("3_4").
-		mapName := naming.ScreamingSnake(naming.EnumValueName(name, full))
-		valName := mapName
+		// is letter-leading. MapName keeps the short form for the DB ("3_4"),
+		// fitted to Postgres's 63-byte label limit (naming.EnumLabel).
+		mapName := naming.EnumLabel(name, full)
+		valName := naming.ScreamingSnake(naming.EnumValueName(name, full))
 		if !startsWithLetter(valName) {
 			valName = naming.ScreamingSnake(full)
 		}
@@ -163,6 +164,55 @@ func (ctx *buildCtx) qualifyLocalEnums(s *schema.Schema, name string) {
 		ex.Name, ex.LocalName = q, q
 		ex.SQLName, ex.LocalSQLName = naming.SnakeCase(q), naming.SnakeCase(q)
 	}
+}
+
+// qualifyEnumsAgainstModels names apart an enum and a model of one schema that
+// share a name: schema-namespaced targets render both bare in one Go package,
+// so a message AdditionalRule nesting an enum AdditionalRule would declare one
+// type twice. The enum yields, taking the names of the messages enclosing it
+// ("AdditionalRule.AdditionalRule" → "AdditionalRuleAdditionalRule"), then its
+// package's domain, then a number, until no model or other enum of the schema
+// has the name. Runs after qualifyLocalModels, so the models' names are final.
+func (ctx *buildCtx) qualifyEnumsAgainstModels(db *schema.Database, diags *diagnostics) {
+	for _, s := range db.Schemas {
+		taken := map[string]bool{}
+		for _, t := range s.Tables {
+			taken[t.LocalName] = true
+		}
+		for _, ex := range s.Enums {
+			taken[ex.LocalName] = true
+		}
+		for _, ex := range s.Enums {
+			src := ctx.enumSrc[ex]
+			if src == nil || !modelNamed(s, ex.LocalName) {
+				continue
+			}
+			pkg := strings.ReplaceAll(string(src.Desc.ParentFile().Package()), ".", "_")
+			base := scopedEnumName(src.Desc)
+			if base == ex.LocalName || taken[base] {
+				base = naming.PascalGo(naming.SchemaDomain(pkg)) + base
+			}
+			q := base
+			for n := 2; taken[q]; n++ {
+				q = base + strconv.Itoa(n)
+			}
+			taken[q] = true
+			diags.warnf("collision", "enum %q of %s shares its name with a model of schema %q; qualified to %q",
+				ex.LocalName, ex.ProtoName, s.Name, q)
+			ex.Name, ex.LocalName = q, q
+			ex.SQLName, ex.LocalSQLName = naming.SnakeCase(q), naming.SnakeCase(q)
+		}
+	}
+}
+
+// modelNamed reports whether schema s has a model of the given local name.
+func modelNamed(s *schema.Schema, name string) bool {
+	for _, t := range s.Tables {
+		if t.LocalName == name {
+			return true
+		}
+	}
+	return false
 }
 
 // scopedEnumName is e's simple name prefixed with the names of the messages

@@ -57,18 +57,25 @@ func buildDatabases(p *protogen.Plugin, diags *diagnostics, readers []schema.Fac
 
 	dedupeSchemaTable := layout != nil && layout.DedupeSchemaTable()
 	for _, db := range order {
+		// Name apart the same-named messages of one schema first, so the
+		// stutter and global passes below see each model's own name.
+		qualifyLocalModels(db, diags)
+		ctx.qualifyEnumsAgainstModels(db, diags)
 		// Rename schema-stuttering table names before relations resolve, so FK
 		// references pick up the final names (opt-in via the generator's config).
 		if dedupeSchemaTable {
 			deStutterTables(db)
 		}
+		dedupeTableNames(db, diags)
 		qualifyModels(db, diags)
+		fitTableNames(db)
 	}
 	// Every database's names are final before any resolves, so a reference into
 	// another database of this build (an external FK) names the real table.
 	resolveRelations(order, disc, diags)
 	for _, db := range order {
 		dedupeEnums(db, diags)
+		fitEnumNames(db)
 	}
 	// Emitted last so the aggregate counts cover every node the build touched,
 	// including the embedded children materialized above.

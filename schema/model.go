@@ -150,6 +150,13 @@ type Column struct {
 	// from Type so a repeated field keeps its element FieldType.
 	List bool
 
+	// Document is true for a message-typed field stored whole, as one JSON
+	// value (Type is TypeJSON), because the generator's layout names its
+	// message type a document (DocumentResolver) -- rather than normalized
+	// into a table of its own. A repeated one is one JSON array. Targets
+	// convert it with the message's own JSON form (protojson).
+	Document bool
+
 	// Enum points to the enum definition when the proto field is an enum kind.
 	// Backends render their native enum reference instead of a projected Type.
 	Enum *Enum
