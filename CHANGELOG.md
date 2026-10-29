@@ -166,6 +166,14 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Changed
 
+- **A join table's target-side foreign key no longer cascades.** The rows of a
+  repeated `google.api.resource_reference` still go with their owner, but their
+  key to the target now takes a singular reference's default action (none, so
+  the database refuses to delete a target a row still names) instead of
+  `CASCADE`, which silently took the deleted target out of every owner's list.
+  An explicit `on_delete` on the field still sets both. Schemas change: the
+  constraint is rewritten without `ON DELETE CASCADE` (Prisma: `Restrict`).
+
 - **Release assets are one archive, not four loose files.** A release now
   carries `protokit-<version>-supply-chain.zip` — the SBOM, its cosign
   signature and certificate, and the SLSA provenance — plus the attestation

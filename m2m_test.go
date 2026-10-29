@@ -2,7 +2,8 @@ package protokit_test
 
 // m2m_test.go builds testdata/m2m and checks that each repeated reference's
 // join table records what it stores (schema.Table.Join), so a target can
-// persist the field without re-deriving the join's naming.
+// persist the field without re-deriving the join's naming, and that its rows
+// go with their owner but, like a singular reference, hold their target.
 
 import (
 	"testing"
@@ -55,6 +56,14 @@ func TestJoinTableMetadata(t *testing.T) {
 		}
 		if *tb.Join != w {
 			t.Errorf("Reader.%s: join %+v, want %+v", field, *tb.Join, w)
+		}
+		// The owner's rows cascade with it; the target's FK takes a singular
+		// reference's default (none: the database refuses the delete).
+		for _, fk := range tb.ForeignKeys {
+			want := map[string]string{w.OwnerColumn: "CASCADE", w.TargetColumn: ""}
+			if a, ok := want[fk.Column]; ok && fk.OnDelete != a {
+				t.Errorf("Reader.%s: %s ON DELETE %q, want %q", field, fk.Column, fk.OnDelete, a)
+			}
 		}
 		for _, col := range []string{w.OwnerColumn, w.TargetColumn, w.NameColumn} {
 			if col == "" {

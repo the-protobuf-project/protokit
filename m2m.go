@@ -77,10 +77,14 @@ func (ctx *buildCtx) buildJoinTable(req *m2mReq, child *schema.Table) {
 		SourceDir:   parent.SourceDir,
 		PgSchema:    req.schemaName,
 	}
-	// One FK to each side. A link row is meaningless once either side is gone, so
-	// both cascade on delete (an explicit on_delete on the field overrides).
+	// One FK to each side. The rows are the owner's field, so they go with the
+	// owner (CASCADE). To the target they are references, as a singular
+	// resource_reference is: its FK takes the same action, the database's
+	// default (which refuses to delete a target a row still names), so a
+	// target the field names is not silently cascaded out of it. An explicit
+	// on_delete on the field sets both.
 	addFKColumn(join, parentCol, parent.ModelName, parent.ProtoMessage, true, embedAction(req.onDelete, true), req.onUpdate)
-	addFKColumn(join, childCol, child.ModelName, child.ProtoMessage, true, embedAction(req.onDelete, true), req.onUpdate)
+	addFKColumn(join, childCol, child.ModelName, child.ProtoMessage, true, req.onDelete, req.onUpdate)
 	// When the child is a nested resource, the leaf id alone can't reconstruct its
 	// full name (resources/{resource}/offerings/{offering} loses the {resource}
 	// parent). Capture the full resource name in a sibling column so callers can
