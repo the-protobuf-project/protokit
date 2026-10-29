@@ -222,6 +222,27 @@ type LayoutResolver interface {
 	DedupeSchemaTable() bool
 }
 
+// EponymousTableResolver is implemented by a LayoutResolver that, while
+// renaming stuttering tables (DedupeSchemaTable), keeps an eponymous table's
+// own name: "booking"."bookings" stays "bookings" rather than becoming the
+// generic "resource". A prefixed table ("schedule"."schedule_exceptions") is
+// still shortened. Renaming an existing table is a migration -- one most
+// migration tools write as a drop and a create -- so it is opt-in.
+//
+// Optional: a LayoutResolver that does not implement it renames eponymous
+// tables, as before.
+type EponymousTableResolver interface {
+	// KeepEponymousTables reports whether an eponymous table keeps its name.
+	KeepEponymousTables() bool
+}
+
+// KeepEponymousTables reports whether layout keeps eponymous table names (see
+// EponymousTableResolver); false for a nil layout or one without the policy.
+func KeepEponymousTables(layout LayoutResolver) bool {
+	r, ok := layout.(EponymousTableResolver)
+	return ok && r.KeepEponymousTables()
+}
+
 // DocumentResolver is implemented by a LayoutResolver whose policy stores some
 // message types whole. A field of such a type becomes one JSON column, marked
 // Column.Document, instead of a table of its own with a foreign key -- for a

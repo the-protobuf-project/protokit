@@ -9,6 +9,18 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
+- **`schema.Table.Join`: what a many-to-many join table stores.** A join table
+  synthesized for a repeated `google.api.resource_reference` now records the
+  owner message, the field, the owner and target key columns and, for a nested
+  target, the column holding its full name. A target persisting the repeated
+  field reads its rows from here instead of re-deriving the join's naming, which
+  before left the field written nowhere.
+- **`schema.EponymousTableResolver`: keep eponymous table names while deduping.**
+  An optional interface on a `LayoutResolver`. With it, `DedupeSchemaTable`
+  keeps `"venue"."venues"` as it is instead of renaming it `"resource"`, and
+  still shortens prefixed tables. Opt-in: renaming an existing table is a
+  migration that most tools (Prisma among them) write as a drop and a create.
+
 - **`buffers` package: a message-graph IR for serialization schema.** Descriptors
   in, a target-agnostic graph of files, messages, fields, oneofs, enums and
   services out, with every field pinned to a target slot that does not move

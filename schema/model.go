@@ -97,6 +97,14 @@ type Table struct {
 	// hierarchical key, not just the leaf id.
 	Parents []string
 
+	// Join is set on a synthesized many-to-many join table (a repeated
+	// google.api.resource_reference whose target is generated in the same
+	// run): which field of which table it stores, and the columns that hold
+	// each side. Nil for every other table. A target that persists the
+	// repeated field -- writing a row per element, reading them back --
+	// reads it from here.
+	Join *Join
+
 	Columns     []*Column
 	Indexes     []*Index
 	ForeignKeys []*ForeignKey
@@ -308,4 +316,37 @@ type ForeignKey struct {
 	// the pair has a single relation (no name needed). Mirrored onto the paired
 	// HasManyRef.RelationName.
 	RelationName string
+}
+
+// Join describes the relation a synthesized join table stores: the repeated
+// reference field Field of the table built from OwnerProto, one row per
+// element.
+type Join struct {
+	// OwnerProto is the full proto name of the message carrying the repeated
+	// field ("library.v1.Shelf").
+	OwnerProto string
+
+	// Field is the repeated field's proto name ("books"), and FieldNode its
+	// facet key ("library.v1.Shelf.books").
+	Field     string
+	FieldNode NodeID
+
+	// OwnerColumn is the join's foreign key to the owner's primary key
+	// ("shelf_id").
+	OwnerColumn string
+
+	// TargetProto is the full proto name of the referenced message
+	// ("library.v1.Book"), and TargetType its resource type
+	// ("library.v1/Book").
+	TargetProto string
+	TargetType  string
+
+	// TargetColumn is the join's foreign key to the target's primary key
+	// ("book_id").
+	TargetColumn string
+
+	// NameColumn holds the target's full resource name ("book_name") when the
+	// target is nested, so the element round-trips without the target's row;
+	// "" for a top-level target, whose name is rebuilt from TargetColumn.
+	NameColumn string
 }

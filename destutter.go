@@ -10,7 +10,9 @@ package protokit
 //   - prefixed table  ("schedule_exceptions" in "schedule") → strip the leading
 //     schema word: "exceptions"  → schedule_exceptions  reads "scheduleExceptions".
 //   - eponymous table ("bookings" in "booking", nothing left after stripping)  →
-//     a generic word ("resource", then "entity"/"record"/"item") → "bookingResource".
+//     a generic word ("resource", then "entity"/"record"/"item") → "bookingResource",
+//     unless the layout keeps eponymous tables (schema.EponymousTableResolver),
+//     when it stays "bookings".
 //
 // Opt in via the generator's config (Backend.DedupeSchemaTable). Runs after all tables are
 // built (including embeds and m2m joins) and before resolveRelations, so foreign
@@ -32,7 +34,10 @@ var genericTableWords = []string{"resource", "entity", "record", "item"}
 // deStutterTables renames every stuttering table in db (see file comment). The
 // Postgres public schema is skipped — Hasura and friends don't prefix it, so no
 // stutter occurs.
-func deStutterTables(db *schema.Database) {
+//
+// keepEponymous leaves an eponymous table (nothing left once the schema word is
+// stripped) under its own name instead of a generic word.
+func deStutterTables(db *schema.Database, keepEponymous bool) {
 	for _, s := range db.Schemas {
 		if s.Name == "public" {
 			continue
@@ -43,6 +48,9 @@ func deStutterTables(db *schema.Database) {
 		}
 		for _, t := range s.Tables {
 			nn := deStutteredName(t.Name, s.Name, taken)
+			if keepEponymous && eponymous(t.Name, s.Name) {
+				nn = t.Name
+			}
 			if nn != t.Name {
 				delete(taken, t.Name)
 				taken[nn] = true
@@ -85,6 +93,18 @@ func deStutteredName(name, schemaName string, taken map[string]bool) string {
 		}
 	}
 	return name
+}
+
+// eponymous reports whether name spells its schema with nothing meaningful
+// left over: "bookings" (or "booking") in "booking". A prefixed table
+// ("booking_items") is not eponymous.
+func eponymous(name, schemaName string) bool {
+	root := squashIdent(schemaName)
+	if root == "" {
+		return false
+	}
+	rest := strings.TrimPrefix(squashIdent(name), root)
+	return len(rest) < len(squashIdent(name)) && (rest == "" || rest == "s" || rest == "es")
 }
 
 // squashIdent lowercases an identifier and removes underscores so "promo_code"

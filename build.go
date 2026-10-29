@@ -64,7 +64,7 @@ func buildDatabases(p *protogen.Plugin, diags *diagnostics, readers []schema.Fac
 		// Rename schema-stuttering table names before relations resolve, so FK
 		// references pick up the final names (opt-in via the generator's config).
 		if dedupeSchemaTable {
-			deStutterTables(db)
+			deStutterTables(db, schema.KeepEponymousTables(layout))
 		}
 		dedupeTableNames(db, diags)
 		qualifyModels(db, diags)

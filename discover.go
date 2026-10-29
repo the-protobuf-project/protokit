@@ -80,7 +80,7 @@ func newDiscovery(p *protogen.Plugin, refs []*descriptorpb.FileDescriptorProto, 
 		}
 		for _, db := range order {
 			if layout != nil && layout.DedupeSchemaTable() {
-				deStutterTables(db)
+				deStutterTables(db, schema.KeepEponymousTables(layout))
 			}
 			qualifyModels(db, &diagnostics{})
 		}

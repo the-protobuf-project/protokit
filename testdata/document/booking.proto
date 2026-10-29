@@ -22,6 +22,12 @@ message Booking {
   repeated vocab.v1.Guest guests = 4 [(google.api.field_behavior) = OPTIONAL];
   // Still a table: not a vocabulary type.
   Note note = 5 [(google.api.field_behavior) = OPTIONAL];
+  // A required document: NOT NULL.
+  vocab.v1.Stay agreed = 6 [(google.api.field_behavior) = REQUIRED];
+  // A required document array: NOT NULL.
+  repeated vocab.v1.Guest leads = 7 [(google.api.field_behavior) = REQUIRED];
+  // A document with no field_behavior: nullable.
+  vocab.v1.Stay planned = 8;
 }
 
 // A note of the booking's own package, normalized as before.

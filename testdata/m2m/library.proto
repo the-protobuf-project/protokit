@@ -1,0 +1,40 @@
+syntax = "proto3";
+
+package library.v1;
+
+import "google/api/field_behavior.proto";
+import "google/api/resource.proto";
+
+// A shelf: a top-level resource.
+message Shelf {
+  option (google.api.resource) = {
+    type: "library.v1/Shelf"
+    pattern: "shelves/{shelf}"
+  };
+
+  string name = 1 [(google.api.field_behavior) = IDENTIFIER];
+}
+
+// A book: nested under its shelf.
+message Book {
+  option (google.api.resource) = {
+    type: "library.v1/Book"
+    pattern: "shelves/{shelf}/books/{book}"
+  };
+
+  string name = 1 [(google.api.field_behavior) = IDENTIFIER];
+}
+
+// A reader, referring to many of each.
+message Reader {
+  option (google.api.resource) = {
+    type: "library.v1/Reader"
+    pattern: "readers/{reader}"
+  };
+
+  string name = 1 [(google.api.field_behavior) = IDENTIFIER];
+  // Nested targets: the join keeps their names.
+  repeated string books = 2 [(google.api.resource_reference).type = "library.v1/Book"];
+  // Top-level targets: the id rebuilds the name.
+  repeated string shelves = 3 [(google.api.resource_reference).type = "library.v1/Shelf"];
+}

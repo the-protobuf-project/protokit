@@ -71,6 +71,17 @@ func TestDocumentFields(t *testing.T) {
 			t.Errorf("Booking.%s: document %v type %v list %v, want a JSON document, list %v", name, c.Document, c.Type, c.List, list)
 		}
 	}
+	// A document column is NOT NULL only when its field is REQUIRED.
+	for name, notNull := range map[string]bool{"stay": false, "guests": false, "planned": false, "agreed": true, "leads": true} {
+		c := cols[name]
+		if c == nil {
+			t.Errorf("Booking.%s: no column", name)
+			continue
+		}
+		if c.NotNull != notNull || c.Optional == notNull {
+			t.Errorf("Booking.%s: not null %v optional %v, want not null %v", name, c.NotNull, c.Optional, notNull)
+		}
+	}
 	if c := cols["state"]; c == nil || c.Document {
 		t.Errorf("Booking.state: %+v, want an ordinary column", c)
 	}

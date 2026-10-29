@@ -101,6 +101,20 @@ func (ctx *buildCtx) buildJoinTable(req *m2mReq, child *schema.Table) {
 		Columns: []string{parentCol, childCol}, Unique: true,
 	})
 	ensurePK(join)
+	// Record what the table stores, so a target persisting the repeated field
+	// finds its rows and columns without re-deriving the naming above.
+	join.Join = &schema.Join{
+		OwnerProto:   parent.ProtoMessage,
+		Field:        string(req.field.Desc.Name()),
+		FieldNode:    schema.NodeIDOfField(req.field.Desc),
+		OwnerColumn:  parentCol,
+		TargetProto:  child.ProtoMessage,
+		TargetType:   req.targetType,
+		TargetColumn: childCol,
+	}
+	if len(child.Parents) > 0 {
+		join.Join.NameColumn = naming.SnakeCase(child.ModelName) + "_name"
+	}
 
 	s := schemaByName(req.db, req.schemaName)
 	s.Tables = append(s.Tables, join)
