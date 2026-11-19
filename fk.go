@@ -67,11 +67,13 @@ func nameIndexes(db *schema.Database) {
 // instead of dropping it. The scalar value is kept, the FK association is cleared
 // (so no relation is rendered to a model that isn't in this generation set), a
 // single-column index is added so cross-service lookups aren't a sequential
-// scan, and a TODO note records the unresolved target for review. This is the
+// scan, and a note records the unresolved target. This is the
 // common case in a multi-service monorepo, where references routinely cross
 // service boundaries that a single generation run can't see.
 func softFK(t *schema.Table, col, refModel string) {
-	note := "TODO: unresolved reference to " + refModel +
+	// Stated as a fact rather than a to-do: the note lands in generated code,
+	// and a generated file is not a place for a to-do list.
+	note := "Unresolved reference to " + refModel +
 		" (not in this generation set); kept as a plain indexed column."
 	for _, c := range t.Columns {
 		if c.Name != col {
