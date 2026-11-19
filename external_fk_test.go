@@ -245,7 +245,7 @@ func TestForeignKeysUnresolvable(t *testing.T) {
 			t.Errorf("%s has external FK %+v, want none (never dangling)", col, fk)
 		}
 		c := columnOf(holds, col)
-		if c == nil || c.FKModel != "" || !strings.Contains(c.Comment, "TODO: unresolved") {
+		if c == nil || c.FKModel != "" || !strings.Contains(c.Comment, "Unresolved reference to") {
 			t.Errorf("%s column = %+v, want a soft FK", col, c)
 		}
 		if !indexed(holds, col) {
