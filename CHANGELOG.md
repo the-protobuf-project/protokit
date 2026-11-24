@@ -9,6 +9,29 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
+- **`apispec`: a source-neutral API model.** Named types (objects, inputs,
+  enums, unions, scalar aliases, maps) with typed, constrained fields, and
+  operations with their HTTP binding, parameters, body, responses, security and
+  a detected paging contract (`DetectPagination`: AIP-158 tokens, cursors,
+  offset/limit, page numbers, Relay). Records facts, never AIP conclusions.
+- **`openapi`: a Swagger 2.0 / OpenAPI 3.0 / 3.1 frontend.** Self-contained
+  (yaml.v3) loader with local/relative/URL `$ref`s and cycles; allOf merging,
+  oneOf/anyOf unions and nullable wrappers, discriminators, const enums,
+  3.1 type arrays and numeric exclusive bounds, every validation keyword,
+  2.0 body/formData parameters, webhooks and callbacks, tags and x-tagGroups.
+  Inline schemas lift to deterministic names; dotted names (Kubernetes) use
+  their last segment. Exercised on Stripe, GitHub, Kubernetes, Asana, Petstore.
+- **`graphql/spec`: GraphQL → apispec**, keeping interfaces, unions,
+  deprecation, defaults, applied directives and custom scalars; engine
+  plumbing is marked `Generated` through the new optional
+  `dialect.TypeFilter`, and `dialect.Detect` picks Hasura only when the
+  schema looks like one.
+- **`graphql/introspect`: fuller introspection.** The query now asks for
+  deprecation and possible types; SDL parsing fills defaults, deprecation,
+  union members/interface implementations, applied directives and
+  `@specifiedBy`, and declares stubs for undeclared directives (federation's
+  `@key`, Prisma's `@unique`) so real-world SDL loads. All additive.
+
 - **`schema.Table.Join`: what a many-to-many join table stores.** A join table
   synthesized for a repeated `google.api.resource_reference` now records the
   owner message, the field, the owner and target key columns and, for a nested
