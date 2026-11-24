@@ -1,0 +1,49 @@
+openapi: 3.1.0
+info: {title: Events, version: "2"}
+paths:
+  /events:
+    get:
+      operationId: listEvents
+      parameters:
+        - {name: limit, in: query, schema: {type: integer, exclusiveMinimum: 0, maximum: 500}}
+        - {name: cursor, in: query, schema: {type: [string, "null"]}}
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: {type: array, items: {$ref: '#/components/schemas/Event'}}
+                  next_cursor: {type: [string, "null"]}
+webhooks:
+  eventCreated:
+    post:
+      requestBody:
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/Event'}
+      responses:
+        '200': {description: ack}
+components:
+  schemas:
+    Event:
+      type: object
+      required: [id, level]
+      properties:
+        id: {type: string, format: uuid}
+        level:
+          oneOf:
+            - {const: 1, description: Low.}
+            - {const: 2, description: High.}
+        payload:
+          anyOf:
+            - {$ref: '#/components/schemas/Payload'}
+            - {type: 'null'}
+        kind: {const: event}
+        labels: {type: object, additionalProperties: true}
+    Payload:
+      type: [object, "null"]
+      properties:
+        body: {type: string, contentEncoding: base64}
