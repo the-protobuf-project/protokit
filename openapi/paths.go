@@ -61,7 +61,16 @@ func (c *converter) pathItem(loc, p string, item map[string]any, kind apispec.Op
 				if err != nil {
 					return err
 				}
-				if err := c.pathItem(iloc, expr, ci, apispec.OpWebhook, op.ID+naming.PascalGo(cbName)); err != nil {
+				// A callback whose path item leads back to one still being
+				// converted would expand forever.
+				key := fmt.Sprintf("%s|%p", iloc, ci)
+				if c.callbacks[key] {
+					return fmt.Errorf("openapi: callback %s %s: cycle back to a path item being converted", cbName, expr)
+				}
+				c.callbacks[key] = true
+				err = c.pathItem(iloc, expr, ci, apispec.OpWebhook, op.ID+naming.PascalGo(cbName))
+				delete(c.callbacks, key)
+				if err != nil {
 					return err
 				}
 			}
@@ -91,16 +100,13 @@ func (c *converter) operation(loc, p, method string, om map[string]any, shared [
 		c.spec.AddGroup(&apispec.Group{Name: g})
 	}
 	if sec, ok := om["security"]; ok {
-		op.Security = []map[string][]string{}
-		for _, alt := range list(sec) {
-			am := obj(alt)
-			req := map[string][]string{}
-			for k, v := range am {
-				if k != orderKey {
-					req[k] = strs(v)
-				}
+		op.Security = securityRequirements(sec)
+	}
+	for _, alt := range c.spec.EffectiveSecurity(op) {
+		for name := range alt {
+			if c.spec.Security[name] == nil {
+				return nil, fmt.Errorf("security requirement names undeclared scheme %q", name)
 			}
-			op.Security = append(op.Security, req)
 		}
 	}
 	hint := naming.PascalGo(op.ID)
@@ -165,7 +171,11 @@ func (c *converter) operation(loc, p, method string, om map[string]any, shared [
 			}
 			t.Fields = append(t.Fields, &apispec.Field{Name: fp.Name, Description: fp.Description, Type: fp.Type, Required: fp.Required, Default: fp.Default, Constraints: fp.Constraints})
 		}
-		op.Body = &apispec.Body{Required: true, Type: apispec.TypeRef{Named: name}, ContentTypes: c.consumes(om)}
+		required := false
+		for _, f := range t.Fields {
+			required = required || f.Required
+		}
+		op.Body = &apispec.Body{Required: required, Type: apispec.TypeRef{Named: name}, ContentTypes: c.consumes(om)}
 	}
 
 	// 3.x requestBody.
@@ -224,18 +234,27 @@ func (c *converter) operation(loc, p, method string, om map[string]any, shared [
 				continue
 			}
 			hm, hloc, err := c.ld.deref(rloc, hdrs[hn])
-			if err != nil || hm == nil {
+			if err != nil {
+				return nil, fmt.Errorf("response %s header %s: %w", status, hn, err)
+			}
+			if hm == nil {
 				continue
 			}
-			hm["name"], hm["in"] = hn, "header"
-			hp, err := c.param(hloc, hm, hint+naming.PascalGo(hn))
-			if err == nil {
-				r.Headers = append(r.Headers, hp)
+			// Copy: the header object may be shared through a $ref.
+			hc := make(map[string]any, len(hm)+2)
+			for k, v := range hm {
+				hc[k] = v
 			}
+			hc["name"], hc["in"] = hn, "header"
+			hp, err := c.param(hloc, hc, hint+naming.PascalGo(hn))
+			if err != nil {
+				return nil, fmt.Errorf("response %s header %s: %w", status, hn, err)
+			}
+			r.Headers = append(r.Headers, hp)
 		}
 		op.Responses = append(op.Responses, r)
 	}
-	if r := successResponse(op.Responses); r != nil && r.Type != nil {
+	if r := successResponse(op.Responses); r != nil {
 		op.Result = r.Type
 	}
 	return op, nil
@@ -251,17 +270,19 @@ func responseSuffix(status string) string {
 	return "Response" + strings.ToUpper(status)
 }
 
-// successResponse picks the primary 2xx response: 200, 201, 202, other 2xx, 2XX.
+// successResponse picks the primary 2xx response that carries a payload: 200,
+// 201, 202, 203, 206, 2XX, then any other 2xx. A 204 or a payload-less 200
+// does not hide a later typed one.
 func successResponse(rs []*apispec.Response) *apispec.Response {
 	for _, want := range []string{"200", "201", "202", "203", "206", "2XX"} {
 		for _, r := range rs {
-			if r.Status == want {
+			if r.Status == want && r.Type != nil {
 				return r
 			}
 		}
 	}
 	for _, r := range rs {
-		if strings.HasPrefix(r.Status, "2") {
+		if strings.HasPrefix(r.Status, "2") && r.Type != nil {
 			return r
 		}
 	}
@@ -281,6 +302,9 @@ func (c *converter) param(loc string, pm map[string]any, hint string) (*apispec.
 	}
 	if e, ok := pm["explode"].(bool); ok {
 		p.Explode = &e
+	}
+	if c.swagger2 && str(pm, "type") == "array" {
+		p.Style, p.Explode = collectionFormat(str(pm, "collectionFormat"), p.In)
 	}
 	sch := pm["schema"]
 	if sch == nil {
@@ -311,10 +335,51 @@ func (c *converter) param(loc string, pm map[string]any, hint string) (*apispec.
 	return p, nil
 }
 
+// collectionFormat maps a Swagger 2.0 array serialization onto the 3.x
+// style/explode pair that sends the same bytes. tsv has no 3.x style and is
+// kept verbatim.
+func collectionFormat(f string, in apispec.ParamIn) (string, *bool) {
+	no, yes := false, true
+	switch f {
+	case "", "csv":
+		if in == apispec.InHeader || in == apispec.InPath {
+			return "simple", &no
+		}
+		return "form", &no
+	case "multi":
+		return "form", &yes
+	case "ssv":
+		return "spaceDelimited", &no
+	case "pipes":
+		return "pipeDelimited", &no
+	}
+	return f, &no
+}
+
 // pickMedia chooses the most structured media type: JSON first, then any
-// +json, then form encodings, then the first declared.
+// +json, then form encodings, then the first declared. Entries that carry a
+// schema are preferred, so an empty application/json does not hide a typed
+// vendor media type.
 func pickMedia(content map[string]any) (map[string]any, any) {
-	ks := keys(content)
+	for _, needSchema := range []bool{true, false} {
+		if mt, sch, ok := pickMediaWhere(content, needSchema); ok {
+			return mt, sch
+		}
+	}
+	return nil, nil
+}
+
+func pickMediaWhere(content map[string]any, needSchema bool) (map[string]any, any, bool) {
+	var ks []string
+	for _, k := range keys(content) {
+		if k == orderKey {
+			continue
+		}
+		if needSchema && obj(content[k])["schema"] == nil {
+			continue
+		}
+		ks = append(ks, k)
+	}
 	pick := ""
 	for _, pref := range []func(string) bool{
 		func(k string) bool { return k == "application/json" },
@@ -333,13 +398,13 @@ func pickMedia(content map[string]any) (map[string]any, any) {
 		}
 	}
 	if pick == "" {
-		return nil, nil
+		return nil, nil, false
 	}
 	mt := obj(content[pick])
 	if mt == nil {
-		return nil, nil
+		return nil, nil, false
 	}
-	return mt, mt["schema"]
+	return mt, mt["schema"], true
 }
 
 func mediaTypes(content map[string]any) []string {
@@ -352,16 +417,18 @@ func mediaTypes(content map[string]any) []string {
 	return out
 }
 
+// consumes and produces: an operation's own list wins even when empty; the
+// document's applies only when the operation omits the key.
 func (c *converter) consumes(om map[string]any) []string {
-	if v := strs(om["consumes"]); len(v) > 0 {
-		return v
+	if v, ok := om["consumes"]; ok {
+		return strs(v)
 	}
 	return strs(c.rootDoc["consumes"])
 }
 
 func (c *converter) produces(om map[string]any) []string {
-	if v := strs(om["produces"]); len(v) > 0 {
-		return v
+	if v, ok := om["produces"]; ok {
+		return strs(v)
 	}
 	return strs(c.rootDoc["produces"])
 }

@@ -161,6 +161,9 @@ func sdlPossibleTypes(s *ast.Schema, d *ast.Definition) []TypeRef {
 		}
 	case ast.Interface:
 		for _, impl := range s.GetPossibleTypes(d) {
+			if impl.Kind != ast.Object {
+				continue // an interface implementing this one is not a runtime type
+			}
 			out = append(out, TypeRef{Kind: "OBJECT", Name: impl.Name})
 		}
 		sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })

@@ -65,6 +65,14 @@ func (t *Type) References() []string {
 		if n := f.Type.Leaf().Named; n != "" {
 			seen[n] = true
 		}
+		for _, a := range f.Args { // GraphQL field arguments reach input types
+			if n := a.Type.Leaf().Named; n != "" {
+				seen[n] = true
+			}
+		}
+	}
+	for _, i := range t.Implements {
+		seen[i] = true
 	}
 	for _, v := range t.Variants {
 		seen[v] = true

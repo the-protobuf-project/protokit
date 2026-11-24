@@ -27,6 +27,12 @@ type fieldInfo struct {
 // hint names the type if the schema is an inline object/enum/union that must
 // be lifted. group is the tag the schema was reached through, if any.
 func (c *converter) schemaType(loc string, v any, hint string) (apispec.TypeRef, fieldInfo, error) {
+	if b, ok := v.(bool); ok && !b {
+		// 3.1 boolean schema false accepts no value at all; apispec has no
+		// type for that. (A property whose schema is false is dropped by
+		// fillObject instead: it simply may not appear.)
+		return apispec.TypeRef{}, fieldInfo{}, errFalseSchema
+	}
 	m := obj(v)
 	if m == nil {
 		// "true" / {} / missing: any JSON value.
@@ -34,8 +40,26 @@ func (c *converter) schemaType(loc string, v any, hint string) (apispec.TypeRef,
 	}
 	info := c.slotInfo(m)
 
+	// OpenAPI 3.1 (JSON Schema 2020-12): $id changes the base URI that
+	// references inside this schema resolve against.
+	if id, ok := m["$id"].(string); ok && id != "" && !c.swagger2 {
+		scope, err := joinLocation(c.refBase(loc), id)
+		if err != nil {
+			return apispec.TypeRef{}, info, err
+		}
+		if i := strings.IndexByte(scope, '#'); i >= 0 {
+			scope = scope[:i]
+		}
+		c.idScope = append(c.idScope, scope)
+		defer func() { c.idScope = c.idScope[:len(c.idScope)-1] }()
+	}
+
 	if s, ok := m["$ref"].(string); ok {
-		r, err := resolveRef(loc, s)
+		base := loc
+		if !strings.HasPrefix(s, "#") {
+			base = c.refBase(loc)
+		}
+		r, err := resolveRef(base, s)
 		if err != nil {
 			return apispec.TypeRef{}, info, err
 		}
@@ -57,6 +81,18 @@ func (c *converter) schemaType(loc string, v any, hint string) (apispec.TypeRef,
 	typ, nullable := schemaTypeName(m)
 	if nullable {
 		info.Nullable = true
+	}
+	if types := nonNullTypes(m); len(types) > 1 {
+		// type: [integer, string]: every listed type is allowed. Numbers
+		// widen to double; any other mix travels as JSON.
+		alts := make([]any, len(types))
+		for i, t := range types {
+			alts[i] = map[string]any{"type": t}
+		}
+		if w, ok := scalarWiden(alts); ok {
+			return apispec.TypeRef{Scalar: w}, info, nil
+		}
+		return apispec.TypeRef{Scalar: apispec.ScalarJSON}, info, nil
 	}
 
 	// Composition first: allOf / oneOf / anyOf.
@@ -80,6 +116,9 @@ func (c *converter) schemaType(loc string, v any, hint string) (apispec.TypeRef,
 			if hasNullValue(enum) {
 				info.Nullable = true
 			}
+			if len(vals) == 0 {
+				return apispec.TypeRef{}, info, errNullOnly
+			}
 			name := c.lift(hint)
 			c.spec.Types[name] = &apispec.Type{
 				Name: name, Kind: apispec.KindEnum, Description: str(m, "description"),
@@ -92,6 +131,9 @@ func (c *converter) schemaType(loc string, v any, hint string) (apispec.TypeRef,
 	switch typ {
 	case "array":
 		items := m["items"]
+		if b, ok := items.(bool); ok && !b {
+			items = nil // items: false closes a prefixItems tuple
+		}
 		if items == nil {
 			items = m["prefixItems"] // 3.1 tuple: take the first slot type
 			if l := list(items); len(l) > 0 {
@@ -168,16 +210,17 @@ func (c *converter) slotInfo(m map[string]any) fieldInfo {
 	k.MinLength, k.MaxLength = integer(m, "minLength"), integer(m, "maxLength")
 	k.Pattern = str(m, "pattern")
 	k.Minimum, k.Maximum = num(m, "minimum"), num(m, "maximum")
-	// 3.0: exclusiveMinimum is a bool; 3.1: it is the bound itself.
+	// 2.0/3.0: exclusiveMinimum is a bool qualifying minimum; 3.1: it is a
+	// bound of its own, and with minimum also present the stricter one holds.
 	if b, ok := m["exclusiveMinimum"].(bool); ok {
 		k.ExclusiveMinimum = b
 	} else if n := num(m, "exclusiveMinimum"); n != nil {
-		k.Minimum, k.ExclusiveMinimum = n, true
+		*k = k.Merge(apispec.Constraints{Minimum: n, ExclusiveMinimum: true})
 	}
 	if b, ok := m["exclusiveMaximum"].(bool); ok {
 		k.ExclusiveMaximum = b
 	} else if n := num(m, "exclusiveMaximum"); n != nil {
-		k.Maximum, k.ExclusiveMaximum = n, true
+		*k = k.Merge(apispec.Constraints{Maximum: n, ExclusiveMaximum: true})
 	}
 	k.MultipleOf = num(m, "multipleOf")
 	k.MinItems, k.MaxItems = integer(m, "minItems"), integer(m, "maxItems")
@@ -187,6 +230,30 @@ func (c *converter) slotInfo(m map[string]any) fieldInfo {
 		k.Const = clean(v)
 	}
 	return fi
+}
+
+var errNullOnly = fmt.Errorf("a schema that only allows null has no apispec type")
+
+var errFalseSchema = fmt.Errorf("schema false accepts no value and has no apispec type")
+
+// refBase is where a non-fragment $ref inside the current schema resolves:
+// the innermost 3.1 $id scope, or the document itself.
+func (c *converter) refBase(loc string) string {
+	if n := len(c.idScope); n > 0 {
+		return c.idScope[n-1]
+	}
+	return loc
+}
+
+// nonNullTypes lists a 3.1 type array's types other than "null".
+func nonNullTypes(m map[string]any) []string {
+	var out []string
+	for _, e := range list(m["type"]) {
+		if s, _ := e.(string); s != "" && s != "null" {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // schemaTypeName returns the schema's primary type and whether "null" is allowed.
@@ -228,7 +295,7 @@ func enumValues(m map[string]any, enum []any) []*apispec.EnumValue {
 		if e == nil {
 			continue
 		}
-		ev := &apispec.EnumValue{Value: e}
+		ev := &apispec.EnumValue{Value: clean(e)}
 		if i < len(names) {
 			ev.Name = names[i]
 		}
@@ -288,6 +355,9 @@ func (c *converter) fillObject(loc string, t *apispec.Type, m map[string]any) er
 		if t.Field(pn) != nil {
 			continue // allOf: the first definition wins
 		}
+		if b, ok := props[pn].(bool); ok && !b {
+			continue // schema false: the property may never appear
+		}
 		ref, fi, err := c.schemaType(loc, props[pn], t.Name+naming.PascalGo(pn))
 		if err != nil {
 			return fmt.Errorf("%s.%s: %w", t.Name, pn, err)
@@ -307,28 +377,100 @@ func (c *converter) fillObject(loc string, t *apispec.Type, m map[string]any) er
 		}
 	}
 	if d := obj(m["discriminator"]); d != nil {
-		t.Discriminator = c.discriminator(loc, d)
+		disc, err := c.discriminator(loc, d)
+		if err != nil {
+			return err
+		}
+		t.Discriminator = disc
 	}
 	return nil
 }
 
 // allOf merges every member into one object, recording $ref members as parents.
 // allOf: [$ref] with only slot keywords alongside is just that reference.
+// An allOf of scalar schemas (string + minLength, string + maxLength) stays
+// that scalar, with the members' constraints intersected.
 func (c *converter) allOf(loc string, m map[string]any, all []any, hint string, info fieldInfo) (apispec.TypeRef, fieldInfo, error) {
-	if len(all) == 1 && obj(m["properties"]) == nil {
+	if len(all) == 1 && obj(m["properties"]) == nil && len(strs(m["required"])) == 0 {
 		ref, ri, err := c.schemaType(loc, all[0], hint)
 		return ref, mergeInfo(ri, info), err
+	}
+	if ref, ci, ok, err := c.scalarAllOf(loc, m, all); err != nil {
+		return apispec.TypeRef{}, info, err
+	} else if ok {
+		info.Constraints = info.Constraints.Merge(ci)
+		return ref, info, nil
 	}
 	name := c.lift(hint)
 	t := &apispec.Type{Name: name, Kind: apispec.KindObject, Synthetic: true, Groups: c.groupList()}
 	c.spec.Types[name] = t
-	if err := c.mergeAllOf(loc, t, m, all); err != nil {
+	required := map[string]bool{}
+	if err := c.mergeAllOf(loc, t, m, all, required); err != nil {
 		return apispec.TypeRef{}, info, err
+	}
+	// Requiredness is applied once every member has contributed its fields,
+	// so member order cannot decide whether a field is required.
+	for _, f := range t.Fields {
+		if required[f.Name] {
+			f.Required = true
+		}
 	}
 	return apispec.TypeRef{Named: name}, info, nil
 }
 
-func (c *converter) mergeAllOf(loc string, t *apispec.Type, m map[string]any, all []any) error {
+// scalarAllOf recognizes an allOf whose members (after following $refs) are
+// all plain scalars. Members of different scalar types cannot all hold, which
+// is an error rather than an empty object.
+func (c *converter) scalarAllOf(loc string, m map[string]any, all []any) (apispec.TypeRef, apispec.Constraints, bool, error) {
+	members := []map[string]any{m}
+	for _, part := range all {
+		pm, _, err := c.ld.deref(loc, part)
+		if err != nil {
+			return apispec.TypeRef{}, apispec.Constraints{}, false, err
+		}
+		if pm == nil || pm["allOf"] != nil || pm["oneOf"] != nil || pm["anyOf"] != nil {
+			return apispec.TypeRef{}, apispec.Constraints{}, false, nil
+		}
+		members = append(members, pm)
+	}
+	typ, format := "", ""
+	var k apispec.Constraints
+	for _, pm := range members {
+		if pm["properties"] != nil || pm["items"] != nil || pm["enum"] != nil || pm["additionalProperties"] != nil {
+			return apispec.TypeRef{}, apispec.Constraints{}, false, nil
+		}
+		t, _ := schemaTypeName(pm)
+		switch t {
+		case "":
+		case "string", "integer", "number", "boolean":
+			if typ != "" && typ != t && (!isNumeric(typ) || !isNumeric(t)) {
+				return apispec.TypeRef{}, apispec.Constraints{}, false, fmt.Errorf("allOf requires both %s and %s", typ, t)
+			}
+			if typ == "" || t == "integer" {
+				typ = t // integer ∩ number = integer
+			}
+		default:
+			return apispec.TypeRef{}, apispec.Constraints{}, false, nil
+		}
+		if f := str(pm, "format"); f != "" {
+			format = f
+		}
+		k = k.Merge(c.slotInfo(pm).Constraints)
+	}
+	if typ == "" {
+		return apispec.TypeRef{}, apispec.Constraints{}, false, nil
+	}
+	return apispec.TypeRef{Scalar: apispec.ScalarFromFormat(typ, format), Format: format}, k, true, nil
+}
+
+func isNumeric(t string) bool { return t == "integer" || t == "number" }
+
+// mergeAllOf expands members into t and collects every required name into
+// required; the caller applies them once all fields exist.
+func (c *converter) mergeAllOf(loc string, t *apispec.Type, m map[string]any, all []any, required map[string]bool) error {
+	for _, r := range strs(m["required"]) {
+		required[r] = true
+	}
 	if err := c.fillObject(loc, t, m); err != nil {
 		return err
 	}
@@ -340,52 +482,62 @@ func (c *converter) mergeAllOf(loc string, t *apispec.Type, m map[string]any, al
 			if err != nil {
 				return err
 			}
-			pname, err := c.namedRef(r)
+			// An inheritance cycle (A allOf B, B allOf A) would re-expand the
+			// same parents forever; recursive property references are fine.
+			key := r.String()
+			if c.composing[key] {
+				return fmt.Errorf("allOf cycle through %s", key)
+			}
+			c.composing[key] = true
+			err = c.mergeRef(loc, t, part, r, i, required)
+			delete(c.composing, key)
 			if err != nil {
 				return err
 			}
-			t.Implements = append(t.Implements, pname)
-			target, tloc, err := c.ld.deref(loc, part)
-			if err != nil {
-				return err
-			}
-			pm, ploc = target, tloc
-		}
-		if pm == nil {
 			continue
 		}
-		if sub := list(pm["allOf"]); len(sub) > 0 {
-			if err := c.mergeAllOf(ploc, t, pm, sub); err != nil {
-				return err
-			}
-			continue
-		}
-		if obj(pm["properties"]) == nil && pm["oneOf"] == nil && pm["anyOf"] == nil {
-			// a constraint-only member (required: [...]) still marks fields required
-			req := map[string]bool{}
-			for _, r := range strs(pm["required"]) {
-				req[r] = true
-			}
-			for _, f := range t.Fields {
-				if req[f.Name] {
-					f.Required = true
-				}
-			}
-			continue
-		}
-		if pm["oneOf"] != nil || pm["anyOf"] != nil {
-			ref, _, err := c.schemaType(ploc, pm, fmt.Sprintf("%sVariant%d", t.Name, i+1))
-			if err != nil {
-				return err
-			}
-			t.Fields = append(t.Fields, &apispec.Field{Name: "variant", Type: ref})
-			continue
-		}
-		if err := c.fillObject(ploc, t, pm); err != nil {
+		if err := c.mergeMember(ploc, t, pm, i, required); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func (c *converter) mergeRef(loc string, t *apispec.Type, part any, r ref, i int, required map[string]bool) error {
+	pname, err := c.namedRef(r)
+	if err != nil {
+		return err
+	}
+	t.Implements = append(t.Implements, pname)
+	target, tloc, err := c.ld.deref(loc, part)
+	if err != nil {
+		return err
+	}
+	return c.mergeMember(tloc, t, target, i, required)
+}
+
+func (c *converter) mergeMember(ploc string, t *apispec.Type, pm map[string]any, i int, required map[string]bool) error {
+	if pm == nil {
+		return nil
+	}
+	if sub := list(pm["allOf"]); len(sub) > 0 {
+		return c.mergeAllOf(ploc, t, pm, sub, required)
+	}
+	for _, r := range strs(pm["required"]) {
+		required[r] = true
+	}
+	if obj(pm["properties"]) == nil && pm["oneOf"] == nil && pm["anyOf"] == nil {
+		return nil // a constraint-only member (required: [...])
+	}
+	if pm["oneOf"] != nil || pm["anyOf"] != nil {
+		ref, _, err := c.schemaType(ploc, pm, fmt.Sprintf("%sVariant%d", t.Name, i+1))
+		if err != nil {
+			return err
+		}
+		t.Fields = append(t.Fields, &apispec.Field{Name: "variant", Type: ref})
+		return nil
+	}
+	return c.fillObject(ploc, t, pm)
 }
 
 // union handles oneOf/anyOf. [X, null] collapses to nullable X; enums written
@@ -399,6 +551,9 @@ func (c *converter) union(loc string, m map[string]any, alts []any, hint string,
 			continue
 		}
 		nonNull = append(nonNull, a)
+	}
+	if len(nonNull) == 0 {
+		return apispec.TypeRef{}, info, errNullOnly
 	}
 	if len(nonNull) == 1 {
 		ref, ri, err := c.schemaType(loc, nonNull[0], hint)
@@ -433,7 +588,11 @@ func (c *converter) union(loc string, m map[string]any, alts []any, hint string,
 		t.Variants = append(t.Variants, ref.Named)
 	}
 	if d := obj(m["discriminator"]); d != nil {
-		t.Discriminator = c.discriminator(loc, d)
+		disc, err := c.discriminator(loc, d)
+		if err != nil {
+			return apispec.TypeRef{}, info, err
+		}
+		t.Discriminator = disc
 	}
 	return apispec.TypeRef{Named: name}, info, nil
 }
@@ -459,7 +618,7 @@ func constEnum(alts []any) ([]*apispec.EnumValue, bool) {
 		if !ok || m["$ref"] != nil {
 			return nil, false
 		}
-		out = append(out, &apispec.EnumValue{Value: v, Description: firstNonEmpty(str(m, "description"), str(m, "title"))})
+		out = append(out, &apispec.EnumValue{Value: clean(v), Description: firstNonEmpty(str(m, "description"), str(m, "title"))})
 	}
 	return out, len(out) > 0
 }
@@ -492,7 +651,7 @@ func scalarWiden(alts []any) (apispec.Scalar, bool) {
 	return apispec.ScalarJSON, true
 }
 
-func (c *converter) discriminator(loc string, d map[string]any) *apispec.Discriminator {
+func (c *converter) discriminator(loc string, d map[string]any) (*apispec.Discriminator, error) {
 	out := &apispec.Discriminator{Property: str(d, "propertyName"), Mapping: map[string]string{}}
 	mp := obj(d["mapping"])
 	for _, k := range keys(mp) {
@@ -502,16 +661,21 @@ func (c *converter) discriminator(loc string, d map[string]any) *apispec.Discrim
 		target, _ := mp[k].(string)
 		if !strings.Contains(target, "#") && !strings.Contains(target, "/") {
 			target = "#/components/schemas/" + target // bare schema name form
+			if c.swagger2 {
+				target = "#/definitions/" + strings.TrimPrefix(target, "#/components/schemas/")
+			}
 		}
 		r, err := resolveRef(loc, target)
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("discriminator mapping %q: %w", k, err)
 		}
-		if n, err := c.namedRef(r); err == nil {
-			out.Mapping[k] = n
+		n, err := c.namedRef(r)
+		if err != nil {
+			return nil, fmt.Errorf("discriminator mapping %q: %w", k, err)
 		}
+		out.Mapping[k] = n
 	}
-	return out
+	return out, nil
 }
 
 func mergeInfo(base, over fieldInfo) fieldInfo {
@@ -529,9 +693,7 @@ func mergeInfo(base, over fieldInfo) fieldInfo {
 	if over.Example != nil {
 		out.Example = over.Example
 	}
-	if !over.Constraints.IsZero() {
-		out.Constraints = over.Constraints
-	}
+	out.Constraints = base.Constraints.Merge(over.Constraints)
 	return out
 }
 

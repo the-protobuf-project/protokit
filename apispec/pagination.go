@@ -40,7 +40,7 @@ func DetectPagination(s *Spec, op *Operation) *Pagination {
 		SizeParam:  matchParam(op.Params, sizeParams),
 		TokenParam: matchParam(op.Params, tokenParams),
 	}
-	res := *op.Result
+	res := expandAlias(s, *op.Result)
 	switch {
 	case res.List != nil:
 		p.ItemType = res.Leaf().Named
@@ -134,4 +134,20 @@ func relay(s *Spec, t *Type, p *Pagination) bool {
 	}
 	p.ItemsField, p.NextField, p.ItemType = edges.Name, info.Name, node.Type.Leaf().Named
 	return true
+}
+
+// expandAlias looks through named aliases (a top-level "type: array" schema,
+// an alias of an alias) to the container or object they stand for, so a
+// result typed as BookList = [Book] is seen as the list it is.
+func expandAlias(s *Spec, r TypeRef) TypeRef {
+	seen := map[string]bool{}
+	for r.Named != "" && !seen[r.Named] {
+		seen[r.Named] = true
+		t := s.Types[r.Named]
+		if t == nil || t.Kind != KindScalar || t.Scalar == nil || t.Scalar.Scalar != "" {
+			return r
+		}
+		r = *t.Scalar
+	}
+	return r
 }

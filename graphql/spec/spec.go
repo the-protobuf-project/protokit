@@ -98,8 +98,38 @@ func Build(in *introspect.Schema, d dialect.Dialect) *apispec.Spec {
 			s.Operations = append(s.Operations, op)
 		}
 	}
+	// A root type is not a domain type, but when something returns it (Relay's
+	// "query: Query" on payloads, "self: Query") it must still resolve.
+	for i := range in.Types {
+		t := &in.Types[i]
+		if roots[t.Name] != "" && s.Types[t.Name] == nil && referenced(s, t.Name) {
+			// Marked Generated: it is the schema's entry point, not part of the
+			// domain model, and its fields are already the operations above.
+			rt := b.typ(t)
+			rt.Generated = true
+			rt.Extensions = map[string]any{"graphqlRoot": string(roots[t.Name])}
+			s.Types[t.Name] = rt
+		}
+	}
 	apispec.AssignGroups(s)
 	return s
+}
+
+// referenced reports whether any operation result or type field points at name.
+func referenced(s *apispec.Spec, name string) bool {
+	for _, op := range s.Operations {
+		if op.Result != nil && op.Result.Leaf().Named == name {
+			return true
+		}
+	}
+	for _, t := range s.Types {
+		for _, f := range t.Fields {
+			if f.Type.Leaf().Named == name {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func isBuiltin(n string) bool {
@@ -141,8 +171,8 @@ func (b *builder) typ(t *introspect.FullType) *apispec.Type {
 			p := b.param(f)
 			out.Fields = append(out.Fields, &apispec.Field{
 				Name: p.Name, Description: p.Description, Type: p.Type,
-				Required: p.Required, Nullable: !p.Required, Default: p.Default,
-				Directives: directives(f.Directives),
+				Required: p.Required, Nullable: p.Nullable, Default: p.Default,
+				Directives: p.Directives,
 			})
 		}
 	case "ENUM":
@@ -187,7 +217,14 @@ func (b *builder) field(f introspect.Field) *apispec.Field {
 
 func (b *builder) param(a introspect.InputValue) *apispec.Param {
 	ref, nonNull := b.ref(a.Type)
-	p := &apispec.Param{Name: a.Name, In: apispec.InArg, Description: a.Description, Type: ref, Required: nonNull && a.DefaultValue == nil}
+	// Required: the caller must supply it (non-null without a default).
+	// Nullable: null is an accepted value, which a defaulted non-null
+	// argument still rejects.
+	p := &apispec.Param{
+		Name: a.Name, In: apispec.InArg, Description: a.Description, Type: ref,
+		Required: nonNull && a.DefaultValue == nil, Nullable: !nonNull,
+		Directives: directives(a.Directives),
+	}
 	if a.DefaultValue != nil {
 		p.Default = *a.DefaultValue
 	}

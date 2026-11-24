@@ -89,7 +89,7 @@ func clean(v any) any {
 	case map[string]any:
 		out := make(map[string]any, len(t))
 		for k, vv := range t {
-			if k == orderKey {
+			if _, meta := vv.(keyOrder); meta && k == orderKey {
 				continue
 			}
 			out[k] = clean(vv)

@@ -3,6 +3,7 @@ package openapi
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -34,6 +35,15 @@ func Load(ctx context.Context, location string, opts Options) (*apispec.Spec, er
 // Parse normalizes an in-memory document. name is its location, used to
 // resolve relative $refs (a path or URL); relative refs are read through opts.Fetch.
 func Parse(ctx context.Context, name string, data []byte, opts Options) (*apispec.Spec, error) {
+	if !isURL(name) {
+		// Same absolute key Load uses, so relative refs reach the Fetcher as
+		// absolute locations and refs back to this document hit the cache.
+		abs, err := filepath.Abs(name)
+		if err != nil {
+			return nil, err
+		}
+		name = abs
+	}
 	ld := newLoader(ctx, opts.Fetch)
 	d, err := decode(data)
 	if err != nil {
@@ -55,6 +65,9 @@ type converter struct {
 	pending   map[string]bool      // reserved names lift() may hand out once
 	aliasInfo map[string]fieldInfo // scalar alias name -> its slot info
 	opIDs     map[string]bool
+	composing map[string]bool // allOf members being expanded (cycle guard)
+	idScope   []string        // OpenAPI 3.1 $id bases of the schemas being converted, innermost last
+	callbacks map[string]bool // callback path items being converted (cycle guard)
 }
 
 func (c *converter) groupList() []string { return nil } // assigned by assignGroups
@@ -68,11 +81,12 @@ func convert(ld *loader, root string) (*apispec.Spec, error) {
 	if m == nil {
 		return nil, fmt.Errorf("openapi: %s: not an object", root)
 	}
+	root = ld.base(root)
 	c := &converter{
 		ld: ld, root: root, rootDoc: m,
 		spec:     apispec.New(apispec.SourceOpenAPI),
 		refNames: map[string]string{}, reserved: map[string]bool{}, pending: map[string]bool{},
-		aliasInfo: map[string]fieldInfo{}, opIDs: map[string]bool{},
+		aliasInfo: map[string]fieldInfo{}, opIDs: map[string]bool{}, composing: map[string]bool{}, callbacks: map[string]bool{},
 	}
 	switch {
 	case str(m, "swagger") != "":
@@ -89,9 +103,16 @@ func convert(ld *loader, root string) (*apispec.Spec, error) {
 	c.spec.Version = str(info, "version")
 	c.spec.Extensions = extensions(m)
 
-	c.servers()
+	if err := c.servers(); err != nil {
+		return nil, err
+	}
 	c.tags()
-	c.securitySchemes()
+	if err := c.securitySchemes(); err != nil {
+		return nil, err
+	}
+	if sec, ok := m["security"]; ok {
+		c.spec.DefaultSecurity = securityRequirements(sec)
+	}
 	if err := c.components(); err != nil {
 		return nil, err
 	}
@@ -110,20 +131,41 @@ func convert(ld *loader, root string) (*apispec.Spec, error) {
 	return c.spec, nil
 }
 
-func (c *converter) servers() {
+// servers records where the API is served. Swagger 2.0 defaults host and
+// scheme to the ones the document was retrieved from; OpenAPI 3.x defaults
+// an absent or empty server list to "/", and resolves relative server URLs
+// against the document's own URL. Nothing is invented for a local document.
+func (c *converter) servers() error {
+	var docURL *url.URL
+	if isURL(c.root) {
+		u, err := url.Parse(c.root)
+		if err != nil {
+			return err
+		}
+		docURL = u
+	}
 	if c.swagger2 {
 		host := str(c.rootDoc, "host")
+		if host == "" && docURL != nil {
+			host = docURL.Host
+		}
 		if host == "" {
-			return
+			if bp := str(c.rootDoc, "basePath"); bp != "" {
+				c.spec.Servers = append(c.spec.Servers, apispec.Server{URL: bp})
+			}
+			return nil
 		}
 		schemes := strs(c.rootDoc["schemes"])
 		if len(schemes) == 0 {
 			schemes = []string{"https"}
+			if docURL != nil {
+				schemes = []string{docURL.Scheme}
+			}
 		}
 		for _, s := range schemes {
 			c.spec.Servers = append(c.spec.Servers, apispec.Server{URL: s + "://" + host + str(c.rootDoc, "basePath")})
 		}
-		return
+		return nil
 	}
 	for _, sv := range list(c.rootDoc["servers"]) {
 		sm := obj(sv)
@@ -135,8 +177,37 @@ func (c *converter) servers() {
 			}
 			u = strings.ReplaceAll(u, "{"+k+"}", str(obj(vars[k]), "default"))
 		}
+		if docURL != nil && !isURL(u) {
+			if r, err := url.Parse(u); err == nil {
+				u = docURL.ResolveReference(r).String()
+			}
+		}
 		c.spec.Servers = append(c.spec.Servers, apispec.Server{URL: u, Description: str(sm, "description")})
 	}
+	if len(c.spec.Servers) == 0 {
+		u := "/"
+		if docURL != nil {
+			u = docURL.ResolveReference(&url.URL{Path: "/"}).String()
+		}
+		c.spec.Servers = append(c.spec.Servers, apispec.Server{URL: u})
+	}
+	return nil
+}
+
+// securityRequirements reads a security requirement list. An explicit empty
+// list stays empty (not nil): it means "no security".
+func securityRequirements(sec any) []map[string][]string {
+	out := []map[string][]string{}
+	for _, alt := range list(sec) {
+		req := map[string][]string{}
+		for k, v := range obj(alt) {
+			if k != orderKey {
+				req[k] = strs(v)
+			}
+		}
+		out = append(out, req)
+	}
+	return out
 }
 
 func (c *converter) tags() {
@@ -158,7 +229,7 @@ func (c *converter) tags() {
 	}
 }
 
-func (c *converter) securitySchemes() {
+func (c *converter) securitySchemes() error {
 	var defs map[string]any
 	if c.swagger2 {
 		defs = obj(c.rootDoc["securityDefinitions"])
@@ -170,8 +241,11 @@ func (c *converter) securitySchemes() {
 			continue
 		}
 		sm, _, err := c.ld.deref(c.root, defs[name])
-		if err != nil || sm == nil {
-			continue
+		if err != nil {
+			return fmt.Errorf("openapi: security scheme %q: %w", name, err)
+		}
+		if sm == nil {
+			return fmt.Errorf("openapi: security scheme %q is not an object", name)
 		}
 		s := &apispec.SecurityScheme{
 			Name: name, Type: str(sm, "type"), Description: str(sm, "description"),
@@ -201,6 +275,7 @@ func (c *converter) securitySchemes() {
 		}
 		c.spec.Security[name] = s
 	}
+	return nil
 }
 
 func stringMap(m map[string]any) map[string]string {
@@ -283,13 +358,26 @@ func (c *converter) namedRef(r ref) (string, error) {
 	c.reserved[name] = true
 	c.pending[name] = true
 
-	target, err := c.ld.lookup(r)
-	if err != nil {
+	// A failed registration must not leave a name behind that a later
+	// reference would reuse as if the type existed.
+	fail := func(err error) (string, error) {
+		delete(c.refNames, key)
+		delete(c.reserved, name)
+		delete(c.pending, name)
+		delete(c.spec.Types, name)
 		return "", err
 	}
-	tref, info, err := c.schemaType(r.Loc, target, name)
+	target, err := c.ld.lookup(r)
 	if err != nil {
-		return "", fmt.Errorf("%s: %w", name, err)
+		return fail(err)
+	}
+	// The referenced schema starts its own $id scope.
+	saved := c.idScope
+	c.idScope = nil
+	tref, info, err := c.schemaType(c.ld.base(r.Loc), target, name)
+	c.idScope = saved
+	if err != nil {
+		return fail(fmt.Errorf("%s: %w", name, err))
 	}
 	delete(c.pending, name)
 	if tref.Named != name {

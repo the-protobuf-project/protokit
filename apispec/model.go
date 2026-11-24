@@ -20,7 +20,11 @@ type Spec struct {
 	Types         map[string]*Type // named types by name
 	Operations    []*Operation     // in source order
 	Security      map[string]*SecurityScheme
-	Extensions    map[string]any // x-* at the document root
+	// DefaultSecurity is the document-level security requirement (OpenAPI
+	// root "security"): alternatives, each mapping a scheme name to its scopes.
+	// nil = none declared. Operation.Security overrides it; see EffectiveSecurity.
+	DefaultSecurity []map[string][]string
+	Extensions      map[string]any // x-* at the document root
 }
 
 // Server is a base URL the API is served from.
@@ -151,6 +155,78 @@ type Constraints struct {
 	UniqueItems                  bool
 	MinProperties, MaxProperties *int64
 	Const                        any
+}
+
+// Merge combines two constraint sets keyword by keyword, as an intersection:
+// both must hold. Bounds keep the tighter value, flags are or-ed, and a keyword
+// only one side states is kept. Pattern, MultipleOf and Const cannot be
+// intersected in this model; when both sides state one, o (the more specific,
+// local declaration) wins.
+func (c Constraints) Merge(o Constraints) Constraints {
+	out := c
+	out.MinLength = maxInt(c.MinLength, o.MinLength)
+	out.MaxLength = minInt(c.MaxLength, o.MaxLength)
+	out.MinItems = maxInt(c.MinItems, o.MinItems)
+	out.MaxItems = minInt(c.MaxItems, o.MaxItems)
+	out.MinProperties = maxInt(c.MinProperties, o.MinProperties)
+	out.MaxProperties = minInt(c.MaxProperties, o.MaxProperties)
+	out.Minimum, out.ExclusiveMinimum = lowerBound(c.Minimum, c.ExclusiveMinimum, o.Minimum, o.ExclusiveMinimum)
+	out.Maximum, out.ExclusiveMaximum = upperBound(c.Maximum, c.ExclusiveMaximum, o.Maximum, o.ExclusiveMaximum)
+	out.UniqueItems = c.UniqueItems || o.UniqueItems
+	if o.Pattern != "" {
+		out.Pattern = o.Pattern
+	}
+	if o.MultipleOf != nil {
+		out.MultipleOf = o.MultipleOf
+	}
+	if o.Const != nil {
+		out.Const = o.Const
+	}
+	return out
+}
+
+func maxInt(a, b *int64) *int64 {
+	if a == nil || b != nil && *b > *a {
+		return b
+	}
+	return a
+}
+
+func minInt(a, b *int64) *int64 {
+	if a == nil || b != nil && *b < *a {
+		return b
+	}
+	return a
+}
+
+// lowerBound keeps the tighter of two minimums; at equal values an exclusive
+// bound is the tighter one.
+func lowerBound(a *float64, ax bool, b *float64, bx bool) (*float64, bool) {
+	switch {
+	case a == nil:
+		return b, bx
+	case b == nil:
+		return a, ax
+	case *b > *a:
+		return b, bx
+	case *a > *b:
+		return a, ax
+	}
+	return a, ax || bx
+}
+
+func upperBound(a *float64, ax bool, b *float64, bx bool) (*float64, bool) {
+	switch {
+	case a == nil:
+		return b, bx
+	case b == nil:
+		return a, ax
+	case *b < *a:
+		return b, bx
+	case *a < *b:
+		return a, ax
+	}
+	return a, ax || bx
 }
 
 // IsZero reports whether no constraint is set.

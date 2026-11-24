@@ -25,7 +25,7 @@ type Operation struct {
 	Result         *TypeRef // primary success payload (GraphQL return type, 2xx schema)
 	ResultNullable bool
 	Responses      []*Response
-	Security       []map[string][]string // alternatives; nil = inherit root, empty = explicitly none
+	Security       []map[string][]string // alternatives; nil = inherit Spec.DefaultSecurity, empty = explicitly none
 	Extensions     map[string]any
 	Pagination     *Pagination // detected/declared paging contract, if any
 }
@@ -58,8 +58,10 @@ type Param struct {
 	Default     any
 	Example     any
 	Constraints Constraints
-	Style       string // OpenAPI serialization style
+	Style       string // OpenAPI serialization style; a Swagger 2.0 collectionFormat with no 3.x equivalent is kept verbatim ("tsv")
 	Explode     *bool
+	Nullable    bool        // may be explicitly null (GraphQL: the type is not non-null, even when a default makes it optional)
+	Directives  []Directive // GraphQL directives applied to the argument
 }
 
 // Body is a request body.
@@ -108,4 +110,14 @@ type OAuthFlow struct {
 	TokenURL         string
 	RefreshURL       string
 	Scopes           map[string]string
+}
+
+// EffectiveSecurity is the security requirement that applies to op: its own
+// when it declares one (an empty list meaning explicitly none), otherwise the
+// document's default.
+func (s *Spec) EffectiveSecurity(op *Operation) []map[string][]string {
+	if op.Security != nil {
+		return op.Security
+	}
+	return s.DefaultSecurity
 }

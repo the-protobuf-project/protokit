@@ -22,37 +22,65 @@ type Fetcher func(ctx context.Context, location string) ([]byte, error)
 
 // DefaultFetcher reads local files and http(s) URLs.
 func DefaultFetcher(ctx context.Context, location string) ([]byte, error) {
+	b, _, err := fetchDefault(ctx, location)
+	return b, err
+}
+
+// fetchDefault is DefaultFetcher that also reports where the document was
+// finally served from: after an HTTP redirect, relative references resolve
+// against the new URL, not the one requested.
+func fetchDefault(ctx context.Context, location string) ([]byte, string, error) {
 	if isURL(location) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, location, nil)
 		if err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		c := &http.Client{Timeout: 60 * time.Second}
 		resp, err := c.Do(req)
 		if err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		defer func() { _ = resp.Body.Close() }()
 		if resp.StatusCode/100 != 2 {
-			return nil, fmt.Errorf("GET %s: %s", location, resp.Status)
+			return nil, "", fmt.Errorf("GET %s: %s", location, resp.Status)
 		}
-		return io.ReadAll(resp.Body)
+		final := location
+		if resp.Request != nil && resp.Request.URL != nil {
+			final = resp.Request.URL.String()
+		}
+		b, err := io.ReadAll(resp.Body)
+		return b, final, err
 	}
-	return os.ReadFile(location)
+	b, err := os.ReadFile(location)
+	return b, location, err
 }
 
 // loader holds every document reached so far, keyed by absolute location.
 type loader struct {
-	ctx   context.Context
-	fetch Fetcher
-	docs  map[string]any
+	ctx    context.Context
+	fetch  func(context.Context, string) ([]byte, string, error)
+	docs   map[string]any
+	finals map[string]string // requested location -> where it was served from, when they differ
 }
 
 func newLoader(ctx context.Context, f Fetcher) *loader {
-	if f == nil {
-		f = DefaultFetcher
+	l := &loader{ctx: ctx, fetch: fetchDefault, docs: map[string]any{}, finals: map[string]string{}}
+	if f != nil {
+		l.fetch = func(ctx context.Context, loc string) ([]byte, string, error) {
+			b, err := f(ctx, loc)
+			return b, loc, err
+		}
 	}
-	return &loader{ctx: ctx, fetch: f, docs: map[string]any{}}
+	return l
+}
+
+// base is the location relative references inside the document at loc
+// resolve against: where it was served from after any redirect.
+func (l *loader) base(loc string) string {
+	if f, ok := l.finals[loc]; ok {
+		return f
+	}
+	return loc
 }
 
 // doc returns the parsed document at an absolute location, loading it once.
@@ -60,7 +88,7 @@ func (l *loader) doc(loc string) (any, error) {
 	if d, ok := l.docs[loc]; ok {
 		return d, nil
 	}
-	raw, err := l.fetch(l.ctx, loc)
+	raw, final, err := l.fetch(l.ctx, loc)
 	if err != nil {
 		return nil, fmt.Errorf("openapi: read %s: %w", loc, err)
 	}
@@ -69,6 +97,10 @@ func (l *loader) doc(loc string) (any, error) {
 		return nil, fmt.Errorf("openapi: parse %s: %w", loc, err)
 	}
 	l.docs[loc] = d
+	if final != "" && final != loc {
+		l.finals[loc] = final
+		l.docs[final] = d
+	}
 	return d, nil
 }
 
@@ -87,83 +119,162 @@ func decode(raw []byte) (any, error) {
 	if len(n.Content) == 0 {
 		return map[string]any{}, nil
 	}
-	return nodeValue(n.Content[0]), nil
+	cv := &yamlConverter{active: map[*yaml.Node]bool{}}
+	return cv.value(n.Content[0])
 }
 
-// nodeValue converts a yaml node to plain values, keeping every mapping key a
-// string (yaml.v3 would produce int keys for "200:" response codes).
-func nodeValue(n *yaml.Node) any {
+// maxYAMLNodes bounds alias expansion: a few aliases nested in each other
+// ("billion laughs") expand exponentially even without a cycle.
+const maxYAMLNodes = 10_000_000
+
+// yamlConverter turns yaml nodes into plain values, keeping every mapping key a
+// string (yaml.v3 would produce int keys for "200:" response codes). Aliases
+// are expanded; one that leads back into a node still being converted is a
+// cycle and an error, while reusing an anchor in several places is fine.
+type yamlConverter struct {
+	active map[*yaml.Node]bool
+	nodes  int
+}
+
+func (cv *yamlConverter) value(n *yaml.Node) (any, error) {
+	if cv.active[n] {
+		return nil, fmt.Errorf("line %d: YAML alias cycle", n.Line)
+	}
+	if cv.nodes++; cv.nodes > maxYAMLNodes {
+		return nil, fmt.Errorf("YAML aliases expand to more than %d nodes", maxYAMLNodes)
+	}
+	cv.active[n] = true
+	defer delete(cv.active, n)
 	switch n.Kind {
 	case yaml.DocumentNode:
 		if len(n.Content) == 0 {
-			return nil
+			return nil, nil
 		}
-		return nodeValue(n.Content[0])
+		return cv.value(n.Content[0])
 	case yaml.AliasNode:
-		return nodeValue(n.Alias)
+		return cv.value(n.Alias)
 	case yaml.MappingNode:
-		m := make(map[string]any, len(n.Content)/2)
-		keys := make([]string, 0, len(n.Content)/2)
-		for i := 0; i+1 < len(n.Content); i += 2 {
-			k := n.Content[i]
-			v := n.Content[i+1]
-			if k.Tag == "!!merge" { // <<: *anchor
-				if mm, ok := nodeValue(v).(map[string]any); ok {
-					for kk, vv := range mm {
-						if _, exists := m[kk]; !exists {
-							m[kk] = vv
-							keys = append(keys, kk)
-						}
-					}
-				}
-				continue
-			}
-			if _, exists := m[k.Value]; !exists {
-				keys = append(keys, k.Value)
-			}
-			m[k.Value] = nodeValue(v)
-		}
-		m[orderKey] = keys
-		return m
+		return cv.mapping(n)
 	case yaml.SequenceNode:
 		out := make([]any, 0, len(n.Content))
 		for _, c := range n.Content {
-			out = append(out, nodeValue(c))
+			v, err := cv.value(c)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, v)
 		}
-		return out
+		return out, nil
 	case yaml.ScalarNode:
-		switch n.Tag {
-		case "!!null":
-			return nil
-		case "!!bool":
-			b, _ := strconv.ParseBool(n.Value)
-			return b
-		case "!!int":
-			if i, err := strconv.ParseInt(n.Value, 0, 64); err == nil {
-				return i
+		return scalarValue(n), nil
+	}
+	return nil, nil
+}
+
+// mapping converts a mapping. Explicit keys win over merged ("<<") ones
+// wherever they appear, and among merge sources (<<: *a, or <<: [*a, *b])
+// the earlier one wins, as the YAML merge-key spec says. Merged keys keep
+// each source's own key order.
+func (cv *yamlConverter) mapping(n *yaml.Node) (any, error) {
+	m := make(map[string]any, len(n.Content)/2)
+	var keys []string
+	var merges []*yaml.Node
+	for i := 0; i+1 < len(n.Content); i += 2 {
+		k, v := n.Content[i], n.Content[i+1]
+		if k.Tag == "!!merge" {
+			merges = append(merges, v)
+			continue
+		}
+		if k.Value == orderKey {
+			return nil, fmt.Errorf("line %d: the mapping key %q is reserved", k.Line, orderKey)
+		}
+		val, err := cv.value(v)
+		if err != nil {
+			return nil, err
+		}
+		if _, exists := m[k.Value]; !exists {
+			keys = append(keys, k.Value)
+		}
+		m[k.Value] = val
+	}
+	var sources []*yaml.Node
+	for _, v := range merges {
+		src := v
+		for src.Kind == yaml.AliasNode && src.Alias != nil {
+			src = src.Alias
+		}
+		if src.Kind == yaml.SequenceNode {
+			sources = append(sources, src.Content...)
+		} else {
+			sources = append(sources, v)
+		}
+	}
+	for _, s := range sources {
+		sv, err := cv.value(s)
+		if err != nil {
+			return nil, err
+		}
+		sm, ok := sv.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("line %d: a merge key (<<) needs a mapping", s.Line)
+		}
+		for _, kk := range orderedKeys(sm) {
+			if _, exists := m[kk]; !exists {
+				m[kk] = sm[kk]
+				keys = append(keys, kk)
 			}
-			if f, err := strconv.ParseFloat(n.Value, 64); err == nil {
-				return f
-			}
-			return n.Value
-		case "!!float":
-			if f, err := strconv.ParseFloat(n.Value, 64); err == nil {
-				return f
-			}
-			return n.Value
+		}
+	}
+	m[orderKey] = keyOrder(keys)
+	return m, nil
+}
+
+func orderedKeys(m map[string]any) []string {
+	var out []string
+	for _, k := range keys(m) {
+		if k != orderKey {
+			out = append(out, k)
+		}
+	}
+	return out
+}
+
+func scalarValue(n *yaml.Node) any {
+	switch n.Tag {
+	case "!!null":
+		return nil
+	case "!!bool":
+		b, _ := strconv.ParseBool(n.Value)
+		return b
+	case "!!int":
+		if i, err := strconv.ParseInt(n.Value, 0, 64); err == nil {
+			return i
+		}
+		if f, err := strconv.ParseFloat(n.Value, 64); err == nil {
+			return f
+		}
+		return n.Value
+	case "!!float":
+		if f, err := strconv.ParseFloat(n.Value, 64); err == nil {
+			return f
 		}
 		return n.Value
 	}
-	return nil
+	return n.Value
 }
 
 // orderKey stores a mapping's source key order inside the map itself, so
-// properties and paths keep the order the author wrote them in.
+// properties and paths keep the order the author wrote them in. The value has
+// its own type, keyOrder, so it is never mistaken for document data; a YAML
+// document that uses the key itself is rejected by the decoder, and clean()
+// strips the metadata before any value leaves the package.
 const orderKey = "\x00order"
+
+type keyOrder []string
 
 // keys returns a mapping's keys in source order (sorted for JSON-decoded maps).
 func keys(m map[string]any) []string {
-	if ks, ok := m[orderKey].([]string); ok {
+	if ks, ok := m[orderKey].(keyOrder); ok {
 		return ks
 	}
 	out := make([]string, 0, len(m))
@@ -185,6 +296,14 @@ func (r ref) String() string { return r.Loc + "#" + r.Pointer }
 // resolveRef turns a $ref string relative to base into an absolute ref.
 func resolveRef(base, s string) (ref, error) {
 	file, frag, _ := strings.Cut(s, "#")
+	// The fragment is a URI fragment: percent-decode it once, then it is a
+	// plain JSON pointer (RFC 6901 §6), so "#/components%2Fschemas/Book"
+	// and "#/components/schemas/Book" name the same schema and the same type.
+	if dec, err := url.PathUnescape(frag); err == nil {
+		frag = dec
+	} else {
+		return ref{}, fmt.Errorf("openapi: $ref %q: %w", s, err)
+	}
 	loc := base
 	if file != "" {
 		var err error
@@ -197,9 +316,11 @@ func resolveRef(base, s string) (ref, error) {
 }
 
 func joinLocation(base, rel string) (string, error) {
-	if isURL(rel) || filepath.IsAbs(rel) {
+	if isURL(rel) {
 		return rel, nil
 	}
+	// Inside a document served over HTTP every reference is a URI reference,
+	// "/schemas/book.yaml" included: it names a path on the same origin.
 	if isURL(base) {
 		b, err := url.Parse(base)
 		if err != nil {
@@ -210,6 +331,9 @@ func joinLocation(base, rel string) (string, error) {
 			return "", err
 		}
 		return b.ResolveReference(r).String(), nil
+	}
+	if filepath.IsAbs(rel) {
+		return rel, nil
 	}
 	return filepath.Join(filepath.Dir(base), filepath.FromSlash(rel)), nil
 }
@@ -224,12 +348,11 @@ func (l *loader) lookup(r ref) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	if r.Pointer == "" || r.Pointer == "/" {
+	if r.Pointer == "" { // "/" is not the root: it selects the member named ""
 		return d, nil
 	}
 	cur := d
 	for _, tok := range strings.Split(strings.TrimPrefix(r.Pointer, "/"), "/") {
-		tok, _ = url.PathUnescape(tok)
 		tok = strings.ReplaceAll(strings.ReplaceAll(tok, "~1", "/"), "~0", "~")
 		switch c := cur.(type) {
 		case map[string]any:
@@ -271,7 +394,7 @@ func (l *loader) deref(loc string, v any) (map[string]any, string, error) {
 		if err != nil {
 			return nil, loc, err
 		}
-		v, loc = t, r.Loc
+		v, loc = t, l.base(r.Loc)
 	}
 	return nil, loc, fmt.Errorf("openapi: $ref chain too deep at %s", loc)
 }

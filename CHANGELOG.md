@@ -14,6 +14,9 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   operations with their HTTP binding, parameters, body, responses, security and
   a detected paging contract (`DetectPagination`: AIP-158 tokens, cursors,
   offset/limit, page numbers, Relay). Records facts, never AIP conclusions.
+  Document-level security is `Spec.DefaultSecurity`; `Spec.EffectiveSecurity`
+  applies it to operations that do not declare their own. `Constraints.Merge`
+  intersects two constraint sets keyword by keyword.
 - **`openapi`: a Swagger 2.0 / OpenAPI 3.0 / 3.1 frontend.** Self-contained
   (yaml.v3) loader with local/relative/URL `$ref`s and cycles; allOf merging,
   oneOf/anyOf unions and nullable wrappers, discriminators, const enums,

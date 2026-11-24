@@ -98,3 +98,39 @@ func TestBuild(t *testing.T) {
 		t.Errorf("users groups: %v", users.Groups)
 	}
 }
+
+func TestRootsArgsAndInterfaces(t *testing.T) {
+	in, err := introspect.ParseSDL("roots.graphql", `
+interface Node { id: ID! }
+interface Named implements Node { id: ID!, name: String }
+type Item implements Node & Named { id: ID!, name: String }
+type Payload { query: Query, item: Item }
+type Query { self: Query, items(first: Int! = 10, tag: String @deprecated): [Item!]! }
+type Mutation { touch: Payload }
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := Build(in, nil)
+	q := s.Types["Query"]
+	if q == nil || !q.Generated {
+		t.Fatalf("Query must resolve (and be marked Generated): %+v", q)
+	}
+	for _, v := range s.Types["Node"].Variants {
+		if v == "Named" {
+			t.Error("an interface is not a runtime possible type")
+		}
+	}
+	var first *apispec.Param
+	for _, op := range s.Operations {
+		if op.ID == "items" {
+			first = op.Params[0]
+		}
+	}
+	if first == nil || first.Required || first.Nullable {
+		t.Fatalf("first: %+v (defaulted non-null: optional, not nullable)", first)
+	}
+	if refs := s.Types["Item"].References(); len(refs) < 2 {
+		t.Errorf("Item references %v: interfaces missing", refs)
+	}
+}
