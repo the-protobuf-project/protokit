@@ -1,0 +1,171 @@
+openapi: 3.0.3
+info:
+  title: Library API
+  version: "1.2.0"
+  description: Books and authors.
+servers:
+  - url: https://{region}.library.example.com/v1
+    variables:
+      region: {default: eu}
+tags:
+  - name: books
+    description: Book catalog.
+  - name: authors
+x-tagGroups:
+  - name: Catalog
+    tags: [books, authors]
+paths:
+  /books:
+    get:
+      operationId: listBooks
+      tags: [books]
+      parameters:
+        - $ref: '#/components/parameters/PageSize'
+        - name: page_token
+          in: query
+          schema: {type: string}
+        - name: genre
+          in: query
+          schema:
+            type: string
+            enum: [fiction, non_fiction]
+      responses:
+        '200':
+          description: A page of books.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  books:
+                    type: array
+                    items: {$ref: '#/components/schemas/Book'}
+                  next_page_token: {type: string}
+    post:
+      operationId: createBook
+      tags: [books]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/Book'}
+      responses:
+        '201':
+          description: Created.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Book'}
+        default:
+          $ref: '#/components/responses/Error'
+  /books/{book_id}:
+    parameters:
+      - name: book_id
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+    get:
+      operationId: getBook
+      tags: [books]
+      responses:
+        '200':
+          description: OK
+          headers:
+            ETag:
+              schema: {type: string}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Book'}
+    delete:
+      operationId: deleteBook
+      tags: [books]
+      responses:
+        '204': {description: Deleted.}
+  /authors/{author_id}:
+    get:
+      tags: [authors]
+      parameters:
+        - {name: author_id, in: path, required: true, schema: {type: integer, format: int64}}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: 'models.yaml#/Author'}
+components:
+  parameters:
+    PageSize:
+      name: page_size
+      in: query
+      schema: {type: integer, format: int32, minimum: 1, maximum: 100, default: 20}
+  responses:
+    Error:
+      description: Error.
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
+  schemas:
+    Book:
+      type: object
+      description: A book.
+      required: [title, author_id]
+      properties:
+        id: {type: string, format: uuid, readOnly: true}
+        title: {type: string, minLength: 1, maxLength: 200}
+        author_id: {type: integer, format: int64}
+        isbn: {type: string, pattern: '^[0-9-]{10,17}$', nullable: true}
+        status:
+          type: string
+          enum: [draft, published, archived]
+          x-enum-descriptions: [Not yet visible., Visible., Hidden.]
+        published_at: {type: string, format: date-time}
+        price: {$ref: '#/components/schemas/Money'}
+        tags:
+          type: array
+          items: {type: string}
+          uniqueItems: true
+        metadata:
+          type: object
+          additionalProperties: {type: string}
+        cover: {$ref: '#/components/schemas/Media'}
+        created_at: {type: string, format: date-time, readOnly: true}
+    Money:
+      type: object
+      properties:
+        currency_code: {type: string}
+        amount: {type: string, format: decimal}
+    Media:
+      oneOf:
+        - $ref: '#/components/schemas/Image'
+        - $ref: '#/components/schemas/Video'
+      discriminator:
+        propertyName: kind
+        mapping:
+          image: '#/components/schemas/Image'
+          video: Video
+    MediaBase:
+      type: object
+      required: [kind]
+      properties:
+        kind: {type: string}
+        url: {type: string, format: uri}
+    Image:
+      allOf:
+        - $ref: '#/components/schemas/MediaBase'
+        - type: object
+          properties:
+            width: {type: integer}
+    Video:
+      allOf:
+        - $ref: '#/components/schemas/MediaBase'
+        - type: object
+          required: [duration]
+          properties:
+            duration: {type: string, format: duration}
+    Error:
+      type: object
+      properties:
+        code: {type: integer}
+        message: {type: string}
+    Isbn:
+      type: string
+      pattern: '^[0-9-]+$'

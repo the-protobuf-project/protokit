@@ -24,6 +24,8 @@ const introspectionQuery = `query IntrospectionQuery {
           defaultValue
         }
         type { ...TypeRef }
+        isDeprecated
+        deprecationReason
       }
       inputFields {
         name
@@ -35,7 +37,10 @@ const introspectionQuery = `query IntrospectionQuery {
       enumValues(includeDeprecated: true) {
         name
         description
+        isDeprecated
+        deprecationReason
       }
+      possibleTypes { ...TypeRef }
     }
   }
 }

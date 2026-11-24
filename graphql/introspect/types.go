@@ -40,14 +40,32 @@ type FullType struct {
 	InputFields []InputValue `json:"inputFields"`
 	EnumValues  []EnumValue  `json:"enumValues"`
 	Interfaces  []TypeRef    `json:"interfaces"`
+	// PossibleTypes lists a union's members or an interface's implementations.
+	PossibleTypes []TypeRef `json:"possibleTypes"`
+	// SpecifiedByURL is a custom scalar's specification link (GraphQL 2021+).
+	SpecifiedByURL string `json:"specifiedByURL,omitempty"`
+	// Directives are the directives applied to the definition. Introspection
+	// does not expose them; only SDL parsing fills this.
+	Directives []AppliedDirective `json:"appliedDirectives,omitempty"`
+}
+
+// AppliedDirective is one directive application (@key(fields: "id")), with each
+// argument kept as its raw GraphQL literal text.
+type AppliedDirective struct {
+	Name string            `json:"name"`
+	Args map[string]string `json:"args,omitempty"`
 }
 
 // Field is a field on an object/interface type, including its arguments.
 type Field struct {
-	Name        string       `json:"name"`
-	Description string       `json:"description"`
-	Args        []InputValue `json:"args"`
-	Type        TypeRef      `json:"type"`
+	Name              string       `json:"name"`
+	Description       string       `json:"description"`
+	Args              []InputValue `json:"args"`
+	Type              TypeRef      `json:"type"`
+	IsDeprecated      bool         `json:"isDeprecated"`
+	DeprecationReason *string      `json:"deprecationReason"`
+	// Directives: SDL only (see FullType.Directives).
+	Directives []AppliedDirective `json:"appliedDirectives,omitempty"`
 }
 
 // InputValue is an argument or input-object field with its type and default.
@@ -56,12 +74,16 @@ type InputValue struct {
 	Description  string  `json:"description"`
 	Type         TypeRef `json:"type"`
 	DefaultValue *string `json:"defaultValue"`
+	// Directives: SDL only (see FullType.Directives).
+	Directives []AppliedDirective `json:"appliedDirectives,omitempty"`
 }
 
 // EnumValue is a single value of an enum type.
 type EnumValue struct {
-	Name        string `json:"name"`
-	Description string `json:"description"`
+	Name              string  `json:"name"`
+	Description       string  `json:"description"`
+	IsDeprecated      bool    `json:"isDeprecated"`
+	DeprecationReason *string `json:"deprecationReason"`
 }
 
 // TypeRef is a (possibly wrapped) reference to a type. Kind is one of NON_NULL,
